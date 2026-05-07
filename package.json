@@ -3,6 +3,11 @@
   "version": "0.5.3",
   "productName": "DaDa",
   "description": "DaDa autonomous AI agent with built-in GGUF runtime, multi-model orchestration, automation, and self-learning",
+  "author": {
+    "name": "Orion Wang",
+    "email": "drgonw1021@gmail.com",
+    "url": "https://github.com/drgonw1021-lgtm"
+  },
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {

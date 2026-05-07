@@ -1,6 +1,6 @@
 appId: com.dada.agent
 productName: DaDa
-copyright: Copyright 2026
+copyright: Copyright 2026 Orion Wang
 
 directories:
   output: dist-electron
