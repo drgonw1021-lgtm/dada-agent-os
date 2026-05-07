@@ -32,6 +32,7 @@ win:
     - nsis
   icon: web/dada-icon.jpg
   artifactName: ${productName}-${version}-${arch}.${ext}
+  signAndEditExecutable: false
 
 nsis:
   oneClick: false
