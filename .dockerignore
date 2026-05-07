@@ -1,0 +1,10 @@
+node_modules
+dist
+.agent
+.env
+.env.local
+.git
+*.md
+.gitignore
+.dockerignore
+web/dada-icon.ico

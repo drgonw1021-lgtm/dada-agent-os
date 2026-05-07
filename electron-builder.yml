@@ -1,0 +1,68 @@
+appId: com.dada.agent
+productName: DaDa
+copyright: Copyright 2026
+
+directories:
+  output: dist-electron
+  buildResources: electron/resources
+
+files:
+  - dist/**/*
+  - web/**/*
+  - electron/**/*
+  - package.json
+  - node_modules/**/*
+
+extraResources:
+  - from: models
+    to: models
+    filter:
+      - "*.gguf"
+      - "*.bin"
+      - "*.mmproj"
+
+asar: true
+asarUnpack:
+  - "node_modules/node-llama-cpp/**"
+  - "node_modules/sql.js/**"
+  - "node_modules/playwright/**"
+
+win:
+  target:
+    - nsis
+  icon: web/dada-icon.jpg
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DaDa
+  installerIcon: web/dada-icon.jpg
+  uninstallerIcon: web/dada-icon.jpg
+
+mac:
+  target:
+    - dmg
+  icon: web/dada-icon.jpg
+  category: public.app-category.developer-tools
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+dmg:
+  title: DaDa ${version}
+  iconSize: 100
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+linux:
+  target:
+    - AppImage
+  icon: web/dada-icon.jpg
+  category: Development
+  artifactName: ${productName}-${version}-${arch}.${ext}

@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant:ital,wght@0,300;0,400;0,500;1,300&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <title>DaDa</title>
+  <meta name="description" content="Local-first autonomous AI agent OS" />
+  <meta name="theme-color" content="#0f0f1a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="DaDa" />
+  <link rel="icon" href="/dada-icon.jpg" />
+  <link rel="apple-touch-icon" href="/dada-icon.jpg" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="stylesheet" href="/styles.css?v=0.9.4" />
+</head>
+<body>
+
+<!-- Skip-to-content link (WCAG bypass block) -->
+<a href="#goal" class="skip-link">Skip to main content</a>
+
+<div id="app">
+  <!-- Drag-and-drop overlay -->
+  <div class="drop-overlay" id="drop-overlay">
+    <div class="drop-overlay-content">
+      <span class="drop-overlay-icon">⇣</span>
+      <span class="drop-overlay-text">Drop files to attach</span>
+    </div>
+  </div>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       TOP BAR
+       ════════════════════════════════════════════════════════════════ -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <img src="/dada-icon.jpg" alt="DaDa" class="topbar-logo" />
+      <span class="topbar-brand">DaDa</span>
+      <div class="topbar-wave" id="title-wave">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+    </div>
+
+    <div class="topbar-center">
+      <div class="topbar-model-badge" id="topbar-model-badge" title="Current model">
+        <span class="topbar-model-dot" id="topbar-model-dot"></span>
+        <span class="topbar-model-name" id="topbar-model-name">loading...</span>
+      </div>
+      <div class="topbar-status" id="topbar-status">
+        <span class="topbar-status-dot" id="topbar-status-dot"></span>
+        <span id="topbar-status-text">ONLINE</span>
+      </div>
+      <span class="topbar-tokens" id="title-tokens">TOK: —</span>
+    </div>
+
+    <div class="topbar-right">
+      <button class="topbar-drawer-btn" data-drawer="history" title="History" aria-label="Task history">☰</button>
+      <button class="topbar-drawer-btn" data-drawer="projects" title="Projects" aria-label="Projects">◫</button>
+      <button class="topbar-drawer-btn" data-drawer="marketplace" title="Marketplace" aria-label="Marketplace">◈</button>
+      <button class="topbar-drawer-btn" data-drawer="settings" title="Settings" aria-label="Settings">⚙</button>
+      <span class="topbar-sep"></span>
+      <button class="topbar-btn" id="pwa-install-btn" title="Install App" style="display:none" onclick="pwaInstall()" aria-label="Install app">⬇</button>
+      <button class="topbar-btn" id="title-minimize" title="Minimize" aria-label="Minimize">─</button>
+      <button class="topbar-btn" id="title-maximize" title="Maximize" aria-label="Maximize">□</button>
+      <button class="topbar-btn topbar-btn-close" id="title-close" title="Close" aria-label="Close">✕</button>
+    </div>
+  </header>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       MAIN CONTENT (two-column workspace: panel + chat)
+       ════════════════════════════════════════════════════════════════ -->
+  <main class="main">
+
+    <!-- Project Panel (left sidebar, shown when project active) -->
+    <aside class="project-panel" id="project-panel" style="display:none">
+      <div class="panel-header">
+        <div class="panel-header-left">
+          <button class="panel-back-btn" id="panel-back-btn" title="Back to projects">←</button>
+          <h3 class="panel-project-name" id="panel-project-name"></h3>
+        </div>
+        <div class="panel-header-right">
+          <span class="panel-task-count" id="panel-task-count"></span>
+          <button class="panel-delete-btn" id="panel-delete-btn" title="Delete project">✕</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div id="panel-task-list" class="panel-task-list"></div>
+      </div>
+      <div class="panel-footer">
+        <button class="panel-new-task-btn" id="panel-new-task-btn">+ New Task</button>
+      </div>
+    </aside>
+
+    <!-- Chat Workspace (right area, flex-1) -->
+    <div class="chat-workspace" id="chat-workspace">
+
+      <!-- Context Bar (current task info) -->
+      <div class="context-bar" id="context-bar" style="display:none">
+        <div class="context-bar-info">
+          <span class="context-bar-task-name" id="context-bar-task-name"></span>
+          <span class="context-bar-status-badge" id="context-bar-status-badge"></span>
+        </div>
+        <div class="context-bar-stats">
+          <span class="context-bar-stat" id="context-bar-cycles" title="Cycles"></span>
+          <span class="context-bar-stat" id="context-bar-steps" title="Steps"></span>
+        </div>
+        <button class="context-bar-toggle" id="context-bar-toggle" title="Toggle context panel" aria-label="Toggle context panel">◨</button>
+      </div>
+
+      <!-- Home View (hidden by default — chat is primary) -->
+      <div class="home-view" id="home-view" style="display:none">
+        <div class="home-view-content">
+          <h2 class="home-view-title">Choose a project to start working</h2>
+          <p class="home-view-subtitle">or create a new project below</p>
+          <div class="home-project-grid" id="home-project-grid"></div>
+          <button class="home-new-project-btn" id="home-new-project-btn">+ New Project</button>
+        </div>
+      </div>
+
+      <!-- Progress bar (above message list, survives clears) -->
+      <div id="message-progress"><div id="message-progress-fill" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="Task progress"></div></div>
+
+      <!-- Message List (chat/conversation — primary view) -->
+      <div class="message-list" id="message-list"></div>
+
+      <!-- Welcome (shown when no messages) -->
+      <div class="chat-welcome" id="chat-welcome">
+        <div class="chat-welcome-logo"></div>
+        <h1 class="chat-welcome-title">DaDa</h1>
+        <p class="chat-welcome-tagline">Your autonomous AI agent</p>
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-area">
+        <textarea id="goal" rows="2"
+          data-i18n-placeholder="whatToDo"
+          placeholder="What do you want DaDa to do?"
+          maxlength="4000"
+          autofocus></textarea>
+        <div class="input-actions">
+          <div class="input-actions-left">
+            <button type="button" id="toggle-advanced" class="action-chip" title="Show advanced options" aria-expanded="false">
+              <span>+</span> <span data-i18n="options">Options</span>
+            </button>
+            <label class="attach-btn" title="Attach files" aria-label="Attach files">
+              +
+              <input type="file" id="attachments-input" multiple hidden />
+            </label>
+            <button type="button" id="mic-btn" class="mic-btn" title="Voice input" aria-label="Voice input">
+              ◉
+            </button>
+          </div>
+          <button type="submit" id="run-btn" class="run-btn">
+            <span>▶</span> <span data-i18n="submit">Run</span>
+          </button>
+        </div>
+        <div class="attachment-chips" id="attachment-chips" style="display:none"></div>
+        <!-- Advanced options -->
+        <div class="advanced-options" id="advanced-options" style="display:none">
+          <div class="option-row">
+            <label class="opt-label" data-i18n="type">Type</label>
+            <select id="task-type" class="opt-select">
+              <option value="auto">Auto detect</option>
+              <option value="general">General</option>
+              <option value="research">Research</option>
+              <option value="code">Code</option>
+              <option value="presentation">Slides</option>
+              <option value="image_generation">Image</option>
+              <option value="video_generation">Video</option>
+              <option value="voice_generation">Voice</option>
+              <option value="data_analysis">Data</option>
+              <option value="automation">Automation</option>
+              <option value="social_publish">Social Publish</option>
+              <option value="education">Education</option>
+              <option value="healthcare">Healthcare</option>
+              <option value="real_estate">Real Estate</option>
+              <option value="financial_analysis">Finance</option>
+              <option value="legal_review">Legal</option>
+              <option value="video_editing">Video Editing</option>
+              <option value="podcast_production">Podcast</option>
+            </select>
+            <label class="opt-label" data-i18n="format">Format</label>
+            <select id="output-format" class="opt-select">
+              <option value="auto">Auto</option>
+              <option value="markdown">Markdown</option>
+              <option value="slides">Slides</option>
+              <option value="image">Image</option>
+              <option value="pdf">PDF</option>
+              <option value="data">Data</option>
+            </select>
+            <label class="opt-label" data-i18n="model">Model</label>
+            <select id="model-select" class="opt-select">
+              <option value="">default</option>
+            </select>
+          </div>
+          <div class="option-row" id="mode-row">
+            <label class="opt-label">Mode</label>
+            <select id="execution-mode" class="opt-select">
+              <option value="auto">Auto</option>
+              <option value="task">Single Task</option>
+              <option value="project">Project</option>
+            </select>
+            <label class="opt-label">Collaboration</label>
+            <select id="collaboration-mode" class="opt-select" style="display:none">
+              <option value="dag-pipeline">Phase Pipeline</option>
+              <option value="master-worker">Master-Worker</option>
+            </select>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Cancel button (visible during run) -->
+      <div class="cancel-bar" id="cancel-bar" style="display:none">
+        <button id="cancel-btn" class="action-btn danger" data-i18n="cancel">Cancel</button>
+        <span class="cancel-goal" id="task-goal-display"></span>
+      </div>
+
+      <!-- Execution Timeline -->
+      <div id="timeline" class="timeline" style="display:none">
+        <div class="timeline-progress">
+          <div class="timeline-progress-fill" id="timeline-progress-fill"></div>
+        </div>
+      </div>
+
+      <!-- Streaming output -->
+      <div class="streaming-output" id="streaming-output" style="display:none">
+        <div class="streaming-header">Streaming output</div>
+        <div class="streaming-text" id="streaming-text"></div>
+      </div>
+
+      <!-- Result -->
+      <div id="result-section" class="card result-card" style="display:none">
+        <div class="result-header">
+          <span class="result-state" id="result-state"></span>
+          <span class="result-summary-text" id="result-summary"></span>
+          <div class="result-actions">
+            <button id="retry-btn" class="action-btn" style="display:none" data-i18n="retry">Retry</button>
+            <button id="replay-btn" class="action-btn" style="display:none" data-i18n="selfImprove">Self-improve</button>
+            <button id="toggle-steps-btn" class="action-btn" data-i18n="steps">Steps ▾</button>
+            <button id="toggle-raw-btn" class="action-btn" data-i18n="raw">Raw ▸</button>
+          </div>
+        </div>
+        <div id="result-steps" class="steps-list" style="display:none"></div>
+        <pre id="result-raw" class="raw-json" style="display:none"></pre>
+        <div id="artifact-list" class="artifact-list"></div>
+      </div>
+
+    </div><!-- /#chat-workspace -->
+
+    <!-- Context Panel (right slide-in overlay, 320px) -->
+    <aside class="context-panel" id="context-panel">
+      <div class="context-panel-header">
+        <h3 class="context-panel-title">Task Context</h3>
+        <button class="context-panel-close" id="context-panel-close" title="Close panel" aria-label="Close context panel">✕</button>
+      </div>
+      <div class="context-panel-body">
+      <div class="context-card">
+        <h4>Strategy DAG <button id="context-dag-diagram-btn" title="Show DAG diagram" style="display:none;float:right;background:var(--accent);color:#fff;border:none;border-radius:4px;padding:1px 8px;cursor:pointer;font-size:10px">Diagram</button></h4>
+        <div id="context-dag-nodes">No active task</div>
+        <div id="context-dag-diagram" style="display:none;margin-top:8px;overflow-x:auto"></div>
+      </div>
+      <div class="context-card">
+        <h4>Stats</h4>
+        <div id="context-stats">
+          <div class="context-stat">
+            <span class="context-stat-label">Cycle</span>
+            <span class="context-stat-value" id="ctx-cycle">—</span>
+          </div>
+          <div class="context-stat">
+            <span class="context-stat-label">Steps</span>
+            <span class="context-stat-value" id="ctx-steps">—</span>
+          </div>
+          <div class="context-stat">
+            <span class="context-stat-label">Phase</span>
+            <span class="context-stat-value" id="ctx-phase">—</span>
+          </div>
+          <div class="context-stat">
+            <span class="context-stat-label">Tokens</span>
+            <span class="context-stat-value" id="ctx-tokens">—</span>
+          </div>
+        </div>
+      </div>
+      <div class="context-card">
+        <h4>Activity</h4>
+        <div id="context-activity" style="font-size:10.5px;color:var(--text-secondary);max-height:200px;overflow-y:auto">
+          <div style="color:var(--text-muted)">Waiting for task...</div>
+        </div>
+      </div>
+      </div><!-- /.context-panel-body -->
+    </aside>
+
+  </main>
+
+  <!-- ════════════════════════════════════════════════════════════════
+       BOTTOM BAR
+       ════════════════════════════════════════════════════════════════ -->
+  <footer class="bottombar">
+    <span class="bottombar-version">v0.9.4</span>
+    <div class="bottombar-xp">
+      <span class="bottombar-xp-label">Lv.3</span>
+      <div class="xp-bar">
+        <div class="xp-fill" id="xp-fill" style="width:65%"></div>
+      </div>
+    </div>
+    <span class="bottombar-tasks" id="bottombar-task-count">0 tasks</span>
+  </footer>
+
+</div><!-- /#app -->
+
+<!-- ════════════════════════════════════════════════════════════════
+     DRAWER BACKDROP
+     ════════════════════════════════════════════════════════════════ -->
+<div class="drawer-backdrop" id="drawer-backdrop" style="display:none"></div>
+
+<!-- ════════════════════════════════════════════════════════════════
+     DRAWER: Settings (right)
+     ════════════════════════════════════════════════════════════════ -->
+<aside class="drawer drawer-right" id="drawer-settings">
+  <div class="drawer-header">
+    <h2 class="drawer-title">Settings</h2>
+    <button class="drawer-close" data-drawer="settings">✕</button>
+  </div>
+  <div class="drawer-body settings-scroll">
+
+    <!-- Cloud Provider -->
+    <div class="settings-section">
+      <h3>Cloud Provider</h3>
+      <div class="setting-row">
+        <label class="setting-label">Provider</label>
+        <select id="settings-cloud-provider" class="settings-select">
+          <option value="deepseek">DeepSeek</option>
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic Claude</option>
+          <option value="google">Google Gemini</option>
+          <option value="alibaba">通义千问 (Alibaba)</option>
+          <option value="zhipu">智谱 GLM</option>
+          <option value="moonshot">Moonshot Kimi</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">API Endpoint</label>
+        <input type="text" id="settings-cloud-endpoint" class="settings-input" placeholder="https://api.deepseek.com/v1" />
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">API Key</label>
+        <input type="password" id="settings-cloud-api-key" class="settings-input" placeholder="sk-..." />
+      </div>
+    </div>
+
+    <!-- Model Assignment -->
+    <div class="settings-section">
+      <h3>Model Assignment</h3>
+      <div class="setting-row">
+        <label class="setting-label">Planner</label>
+        <select id="settings-planner-model" class="settings-select"></select>
+        <span class="setting-hint">Strategy &amp; planning</span>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">Executor</label>
+        <select id="settings-executor-model" class="settings-select"></select>
+        <span class="setting-hint">Tool execution</span>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">Critic</label>
+        <select id="settings-critic-model" class="settings-select"></select>
+        <span class="setting-hint">Quality review</span>
+      </div>
+      <button class="save-btn" id="save-model-settings">Save Model Settings</button>
+      <span class="save-feedback" id="model-save-feedback"></span>
+    </div>
+
+    <!-- Local Providers -->
+    <div class="settings-section">
+      <h3>Local Providers</h3>
+      <div class="setting-row">
+        <label class="setting-label">Ollama</label>
+        <input type="text" id="settings-ollama-endpoint" class="settings-input" placeholder="http://127.0.0.1:11434" />
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">LM Studio</label>
+        <input type="text" id="settings-lmstudio-endpoint" class="settings-input" placeholder="http://127.0.0.1:1234/v1" />
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">vLLM</label>
+        <input type="text" id="settings-vllm-endpoint" class="settings-input" placeholder="http://127.0.0.1:8000/v1" />
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">llama.cpp</label>
+        <input type="text" id="settings-llamacpp-endpoint" class="settings-input" placeholder="http://127.0.0.1:8080/v1" />
+      </div>
+      <button class="save-btn" id="save-api-settings">Save Endpoints</button>
+      <span class="save-feedback" id="api-save-feedback"></span>
+    </div>
+
+    <!-- Permissions -->
+    <div class="settings-section">
+      <h3 data-i18n="permissions">Permissions</h3>
+      <div class="setting-row">
+        <label class="setting-label">Allow High Risk Tools</label>
+        <label class="toggle">
+          <input type="checkbox" id="settings-allow-high-risk" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">Require Approval for High Risk</label>
+        <label class="toggle">
+          <input type="checkbox" id="settings-require-approval" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">Approval Policy</label>
+        <select id="settings-approval-policy" class="settings-select">
+          <option value="strict">Strict</option>
+          <option value="balanced">Balanced</option>
+          <option value="permissive">Permissive</option>
+        </select>
+      </div>
+      <button class="save-btn" id="save-permission-settings">Save Permission Settings</button>
+      <span class="save-feedback" id="permission-save-feedback"></span>
+    </div>
+
+    <!-- Plugins -->
+    <div class="settings-section">
+      <h3>Plugins</h3>
+      <span class="panel-count" id="plugins-count">0</span>
+      <div id="plugins-list" class="list">
+        <div class="empty-state">Plugins extend DaDa with MCP servers and custom skills.</div>
+      </div>
+    </div>
+
+    <!-- Available Tools -->
+    <div class="settings-section">
+      <h3 data-i18n="availableTools">Available Tools</h3>
+      <span class="panel-count" id="tools-count">0</span>
+      <div id="tools-grid" class="tools-grid"></div>
+    </div>
+
+    <!-- Local Models -->
+    <div class="settings-section">
+      <h3><span data-i18n="localModels">Local Models</span> <span class="panel-count" id="local-models-count">0</span></h3>
+      <div id="hardware-info" class="hardware-info"></div>
+      <div id="local-providers" class="local-providers" style="display:none"></div>
+      <div id="local-models-list" class="local-models-list">
+        <div class="empty-state" data-i18n="loadingModels">Loading models...</div>
+      </div>
+
+      <div class="model-download-section">
+        <h4 data-i18n="downloadModel">Download Model</h4>
+        <div class="setting-row">
+          <input type="text" id="model-download-url" class="settings-input" placeholder="https://huggingface.co/.../model.gguf" />
+        </div>
+        <div class="setting-row">
+          <input type="text" id="model-download-name" class="settings-input" placeholder="model-filename.gguf (optional)" />
+        </div>
+        <button class="save-btn" id="model-download-btn">Download</button>
+        <div id="model-download-progress" class="model-download-progress" style="display:none">
+          <div class="progress-bar">
+            <div class="progress-fill" id="model-download-fill"></div>
+          </div>
+          <span id="model-download-status" class="model-download-status"></span>
+        </div>
+      </div>
+
+      <div class="model-recommended-section">
+        <h4 data-i18n="recommendedModels">Recommended Models</h4>
+        <div id="model-recommendations" class="model-recommendations"></div>
+      </div>
+    </div>
+
+    <!-- Theme & Language -->
+    <div class="settings-section">
+      <h3 data-i18n="language">Language / 语言</h3>
+      <div class="setting-row">
+        <label class="setting-label">Theme / 主题</label>
+        <select id="settings-theme" class="settings-select">
+          <option value="pearl">🫧 Pearl</option>
+          <option value="light">☀️ Light</option>
+          <option value="dark">🌙 Dark</option>
+          <option value="auto">💻 Auto</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <label class="setting-label" data-i18n="uiLanguage">UI Language</label>
+        <select id="settings-locale" class="settings-select">
+          <option value="en">English</option>
+          <option value="zh">中文</option>
+        </select>
+      </div>
+      <button class="save-btn" id="save-locale-settings" data-i18n="saveLanguage">Save Language</button>
+      <span class="save-feedback" id="locale-save-feedback"></span>
+    </div>
+
+    <!-- Environment -->
+    <div class="settings-section">
+      <h3 data-i18n="environment">Environment</h3>
+      <div id="env-list" class="env-list"></div>
+    </div>
+
+    <!-- Knowledge Base -->
+    <div class="settings-section" id="kb-section">
+      <h3 data-i18n="knowledgeBase">Knowledge Base</h3>
+      <div class="kb-stats" id="kb-stats">
+        <div class="kb-stat-row">
+          <span class="kb-stat"><span data-i18n="kbFiles">Files</span>: <strong id="kb-stat-files">-</strong></span>
+          <span class="kb-stat"><span data-i18n="kbChunks">Chunks</span>: <strong id="kb-stat-chunks">-</strong></span>
+          <span class="kb-stat"><span data-i18n="kbTerms">Terms</span>: <strong id="kb-stat-terms">-</strong></span>
+        </div>
+        <div class="kb-stat-row">
+          <span class="kb-stat"><span data-i18n="kbLastIndexed">Last Indexed</span>: <strong id="kb-stat-last">-</strong></span>
+        </div>
+      </div>
+      <div class="kb-actions">
+        <button class="model-btn download" id="kb-index-btn" data-i18n="kbIndexNow">Index Now</button>
+        <button class="model-btn load" id="kb-reindex-btn" data-i18n="kbReindex">Reindex</button>
+        <button class="model-btn delete-model" id="kb-clear-btn" data-i18n="kbClear">Clear</button>
+      </div>
+      <div class="kb-search">
+        <input type="text" id="kb-search-input" class="settings-input" data-i18n-placeholder="kbSearchPlaceholder" placeholder="Search knowledge base..." />
+        <button class="model-btn load" id="kb-search-btn" data-i18n="kbSearch">Search</button>
+      </div>
+      <div class="kb-results" id="kb-results" style="display:none">
+        <div class="kb-results-header">
+          <span data-i18n="kbSearchResults">Results</span> (<span id="kb-results-count">0</span>)
+        </div>
+        <div id="kb-results-list"></div>
+      </div>
+    </div>
+
+  </div>
+</aside>
+
+<!-- ════════════════════════════════════════════════════════════════
+     DRAWER: History (left)
+     ════════════════════════════════════════════════════════════════ -->
+<aside class="drawer drawer-left" id="drawer-history">
+  <div class="drawer-header">
+    <h2 class="drawer-title">History</h2>
+    <button class="drawer-close" data-drawer="history">✕</button>
+  </div>
+  <div class="drawer-body">
+    <span class="panel-count" id="history-count">0</span>
+    <div id="history-list" class="list"></div>
+  </div>
+</aside>
+
+<!-- ════════════════════════════════════════════════════════════════
+     DRAWER: Projects (right)
+     ════════════════════════════════════════════════════════════════ -->
+<aside class="drawer drawer-right" id="drawer-projects">
+  <div class="drawer-header">
+    <h2 class="drawer-title">Projects</h2>
+    <button class="drawer-close" data-drawer="projects">✕</button>
+  </div>
+  <div class="drawer-body">
+    <button class="save-btn" id="project-new-btn" style="margin-bottom:12px">+ New Project</button>
+
+    <!-- Project Create Form -->
+    <div id="project-create-form" class="card" style="display:none">
+      <h3 class="form-title">Create Project</h3>
+      <div class="setting-row">
+        <label class="setting-label">Name</label>
+        <input type="text" id="project-name-input" class="settings-input" placeholder="My Project" />
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">Description</label>
+        <input type="text" id="project-desc-input" class="settings-input" placeholder="Optional description" />
+      </div>
+      <div class="setting-row">
+        <label class="setting-label">Directory</label>
+        <input type="text" id="project-dir-input" class="settings-input" placeholder="./projects/my-project" />
+      </div>
+      <div class="form-actions">
+        <button class="save-btn" id="project-create-submit">Create</button>
+        <button class="action-btn" id="project-create-cancel">Cancel</button>
+      </div>
+    </div>
+
+    <div id="project-list" class="project-list"></div>
+
+    <div id="project-detail" class="card" style="display:none">
+      <div class="project-detail-header">
+        <button class="action-btn" id="project-detail-back">← Back</button>
+        <h3 id="project-detail-name"></h3>
+        <button class="action-btn danger" id="project-detail-delete">Delete</button>
+      </div>
+      <p id="project-detail-desc" class="project-detail-desc"></p>
+      <div class="project-detail-actions">
+        <button class="save-btn" id="project-detail-set-active">Set as Active</button>
+      </div>
+      <h4 style="margin: 12px 0 8px">Tasks</h4>
+      <div id="project-detail-tasks" class="list"></div>
+    </div>
+  </div>
+</aside>
+
+<!-- ════════════════════════════════════════════════════════════════
+     DRAWER: Marketplace (right)
+     ════════════════════════════════════════════════════════════════ -->
+<aside class="drawer drawer-right" id="drawer-marketplace">
+  <div class="drawer-header">
+    <h2 class="drawer-title">Marketplace</h2>
+    <button class="drawer-close" data-drawer="marketplace">✕</button>
+  </div>
+  <div class="drawer-body">
+    <div class="marketplace-search">
+      <input type="text" id="marketplace-search-input" class="settings-input" placeholder="Search skills &amp; MCP servers..." />
+      <button class="save-btn" id="marketplace-search-btn">Search</button>
+    </div>
+    <div class="marketplace-tabs">
+      <button class="marketplace-tab active" data-tab="installed">Installed</button>
+      <button class="marketplace-tab" data-tab="results">Search Results</button>
+    </div>
+    <div id="marketplace-installed" class="marketplace-list"></div>
+    <div id="marketplace-results" class="marketplace-list" style="display:none"></div>
+    <div id="marketplace-status" class="marketplace-status"></div>
+  </div>
+</aside>
+
+<!-- ════════════════════════════════════════════════════════════════
+     DRAWER: Task Detail (right)
+     ════════════════════════════════════════════════════════════════ -->
+<aside class="drawer drawer-right" id="drawer-task-detail">
+  <div class="drawer-header">
+    <h2 class="drawer-title" id="task-detail-title">Task Detail</h2>
+    <button class="drawer-close" data-drawer="task-detail">✕</button>
+  </div>
+  <div class="drawer-body">
+    <div id="task-detail-loading" class="marketplace-empty">Loading...</div>
+    <div id="task-detail-content" style="display:none">
+      <div class="task-detail-meta" id="task-detail-meta"></div>
+      <div class="marketplace-tabs" style="margin-top:12px">
+        <button class="marketplace-tab active" data-dtab="steps">Steps</button>
+        <button class="marketplace-tab" data-dtab="audit">Audit</button>
+        <button class="marketplace-tab" data-dtab="approvals">Approvals</button>
+        <button class="marketplace-tab" data-dtab="artifacts">Artifacts</button>
+      </div>
+      <div id="task-detail-steps" class="task-detail-panel"></div>
+      <div id="task-detail-audit" class="task-detail-panel" style="display:none"></div>
+      <div id="task-detail-approvals" class="task-detail-panel" style="display:none"></div>
+      <div id="task-detail-artifacts" class="task-detail-panel" style="display:none"></div>
+      <div class="task-detail-actions" style="margin-top:12px">
+        <button class="action-btn" id="task-detail-retry" style="display:none">Retry</button>
+        <button class="action-btn" id="task-detail-replay" style="display:none">Self-improve</button>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<!-- Hidden fields -->
+<input type="hidden" id="planner-model-input" />
+<input type="hidden" id="executor-model-input" />
+<input type="hidden" id="critic-model-input" />
+<input type="hidden" id="project-id-input" />
+
+<!-- Toast notification container -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- Service Worker Registration -->
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js?v=0.9.0').then(reg => {
+      console.log('[PWA] Service Worker registered:', reg.scope);
+    }).catch(err => {
+      console.warn('[PWA] Service Worker registration failed:', err.message);
+    });
+  });
+}
+</script>
+
+<script src="/app.js?v=0.9.3"></script>
+</body>
+</html>
