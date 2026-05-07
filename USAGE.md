@@ -255,7 +255,7 @@ APPROVAL_POLICY_PRESET=balanced
 在 PowerShell 中执行：
 
 ```powershell
-cd C:\Users\WanGL\projects\local-agent-os
+cd C:\path\to\local-agent-os
 .\DaDa-OneClick.bat --check
 ```
 
