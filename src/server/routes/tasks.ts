@@ -119,10 +119,20 @@ export async function handlePostTaskResume(
   ctx: ServerContext,
   req: IncomingMessage
 ) {
-  const body = (await readJsonBody(req)) as { taskId?: string };
+  const body = (await readJsonBody(req)) as { taskId?: string; feedback?: string };
   const taskId = body.taskId?.trim();
   if (!taskId) {
     return { status: 400, data: { error: "taskId is required" } };
+  }
+
+  // If feedback is provided, persist it in the state machine for the agent to consume
+  if (body.feedback?.trim()) {
+    const { AgentStateMachine } = await import("../../runtime/agent-state-machine.js");
+    const saved = await AgentStateMachine.loadFromDisk(taskId);
+    if (saved) {
+      saved.setPendingFeedback(body.feedback.trim());
+      await saved.saveToDisk().catch(() => {});
+    }
   }
 
   const task = await ctx.taskQueue.resume(taskId);
@@ -130,4 +140,36 @@ export async function handlePostTaskResume(
     return { status: 404, data: { error: "task not found or cannot be resumed" } };
   }
   return { status: 202, data: { task } };
+}
+
+export async function handlePostTaskFeedback(
+  ctx: ServerContext,
+  req: IncomingMessage
+) {
+  const body = (await readJsonBody(req)) as { taskId?: string; feedback?: string };
+  const taskId = body.taskId?.trim();
+  if (!taskId) {
+    return { status: 400, data: { error: "taskId is required" } };
+  }
+  const feedback = body.feedback?.trim();
+  if (!feedback) {
+    return { status: 400, data: { error: "feedback is required" } };
+  }
+
+  const task = await ctx.taskQueue.get(taskId);
+  if (!task) {
+    return { status: 404, data: { error: "task not found" } };
+  }
+  if (task.status !== "paused") {
+    return { status: 409, data: { error: "task is not paused — feedback can only be given to paused tasks" } };
+  }
+
+  const { AgentStateMachine } = await import("../../runtime/agent-state-machine.js");
+  const saved = await AgentStateMachine.loadFromDisk(taskId);
+  if (saved) {
+    saved.setPendingFeedback(feedback);
+    await saved.saveToDisk().catch(() => {});
+  }
+
+  return { status: 200, data: { taskId, feedbackSaved: true } };
 }

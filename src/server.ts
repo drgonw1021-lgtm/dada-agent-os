@@ -28,6 +28,7 @@ import * as projectRoutes from "./server/routes/projects.js";
 import * as clawhubRoutes from "./server/routes/clawhub.js";
 import * as agentRoutes from "./server/routes/agents.js";
 import * as knowledgeRoutes from "./server/routes/knowledge.js";
+import * as setupRoutes from "./server/routes/setup.js";
 import { WebSocketServer } from "./server/websocket.js";
 import type { ProgressEvent } from "./progress-manager.js";
 import { metrics } from "./observability/metrics.js";
@@ -261,6 +262,20 @@ async function main() {
         return send(res, { status: 200, data: await configRoutes.handleGetProductCapabilities(ctx) });
       }
 
+      // ── Setup Wizard ─────────────────────────────────────────────────
+      if (method === "GET" && path === "/api/setup/status") {
+        return send(res, { status: 200, data: await setupRoutes.handleGetSetupStatus(ctx) });
+      }
+      if (method === "POST" && path === "/api/setup/complete") {
+        const body = (await readJsonBody(req)) as { comfyuiEndpoint?: string };
+        return send(res, await setupRoutes.handlePostSetupComplete(ctx, body));
+      }
+      if (method === "POST" && path === "/api/setup/comfyui/install") {
+        const body = await readJsonBody(req);
+        await setupRoutes.handlePostComfyUIInstall(ctx, body, res);
+        return;
+      }
+
       // ── System ──────────────────────────────────────────────────────
       if (method === "GET" && path === "/api/hardware") {
         return send(res, { status: 200, data: await systemRoutes.handleGetHardware(ctx) });
@@ -347,6 +362,9 @@ async function main() {
       }
       if (method === "POST" && path === "/api/tasks/resume") {
         return send(res, await taskRoutes.handlePostTaskResume(ctx, req));
+      }
+      if (method === "POST" && path === "/api/tasks/feedback") {
+        return send(res, await taskRoutes.handlePostTaskFeedback(ctx, req));
       }
 
       // ── Approvals ───────────────────────────────────────────────────

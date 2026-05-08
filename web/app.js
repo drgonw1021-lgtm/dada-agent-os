@@ -453,6 +453,11 @@ async function api(path, opts = {}) {
   return ct.includes('json') ? res.json() : res.text();
 }
 
+function esc(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 // ── Drawer System ───────────────────────────────────────────────────────────────
 function openDrawer(name) {
   closeAllDrawers();
@@ -750,6 +755,7 @@ function setupTaskUI(reset, goal) {
     const existingErr = document.getElementById('error-card');
     if (existingErr) existingErr.remove();
     document.getElementById('cancel-bar').style.display = 'flex';
+    document.getElementById('feedback-bar').style.display = 'none';
     document.getElementById('task-goal-display').textContent = goal || '';
 
     // Reset context panel
@@ -896,6 +902,14 @@ function watchTask(taskId) {
     handleWaitingApproval(JSON.parse(e.data));
     src.close();
   });
+  src.addEventListener('task.paused', e => {
+    try {
+      const data = JSON.parse(e.data);
+      const p = data.payload || data;
+      stopWatch();
+      showPausedUI(taskId, S.currentTask?.goal || '');
+    } catch {}
+  });
 
   // Polling fallback: single poll function, reused on SSE error and by interval
   let pollAttempts = 0;
@@ -914,10 +928,11 @@ function watchTask(taskId) {
       const data = resp.task || resp;
       const prog = resp.progress;
       const st = data.status || data.state;
-      if (st === 'completed' || st === 'failed' || st === 'waiting_approval') {
+      if (st === 'completed' || st === 'failed' || st === 'waiting_approval' || st === 'paused') {
         clearInterval(S.taskPollTimer);
         S.taskPollTimer = null;
         if (st === 'waiting_approval') handleWaitingApproval(data);
+        else if (st === 'paused') showPausedUI(taskId, data.goal || S.currentTask?.goal || '');
         else handleTerminal(st, data);
       } else {
         handleProgress(prog ? { payload: prog } : data);
@@ -1372,6 +1387,49 @@ async function cancelTask() {
   } catch (err) { log('[ERROR] ' + err.message); }
 }
 
+// ── Pause / Resume ──────────────────────────────────────────────────────────────
+
+async function pauseTask() {
+  if (!S.currentTask?.taskId) return;
+  try {
+    const data = await api('/api/tasks/pause', { method: 'POST', body: { taskId: S.currentTask.taskId } });
+    log('[pause requested] ' + S.currentTask.taskId.slice(0, 8));
+    // UI will update when SSE/polling detects paused state
+  } catch (err) { log('[ERROR] ' + err.message); }
+}
+
+async function resumeTask(feedback) {
+  if (!S.currentTask?.taskId) return;
+  try {
+    const body = { taskId: S.currentTask.taskId };
+    if (feedback && feedback.trim()) {
+      body.feedback = feedback.trim();
+      document.getElementById('feedback-input').value = '';
+    }
+    const data = await api('/api/tasks/resume', { method: 'POST', body });
+    const task = data.task || data;
+    hidePausedUI();
+    setRunButtonLoading(true);
+    log('[resuming] ' + S.currentTask.taskId.slice(0, 8));
+    // Restart SSE watching
+    watchTask(task.taskId || S.currentTask.taskId);
+  } catch (err) { log('[ERROR] ' + err.message); }
+}
+
+function showPausedUI(taskId, goal) {
+  document.getElementById('cancel-bar').style.display = 'none';
+  document.getElementById('feedback-bar').style.display = 'flex';
+  document.getElementById('paused-goal-display').textContent = goal || '';
+  updateThinkingIndicator('⏸ Paused — enter feedback below');
+  document.getElementById('feedback-input').focus();
+  setRunButtonLoading(false);
+}
+
+function hidePausedUI() {
+  document.getElementById('feedback-bar').style.display = 'none';
+  document.getElementById('feedback-input').value = '';
+}
+
 // ── Retry / Replay ──────────────────────────────────────────────────────────────
 async function retryTask() {
   if (!S.currentTask?.taskId) return;
@@ -1749,6 +1807,377 @@ const MODEL_DOWNLOAD_URLS = {
 function getModelDownloadUrl(modelId) {
   return MODEL_DOWNLOAD_URLS[modelId] || '';
 }
+
+// ════════════════════════════════════════════════════════════════
+// SETUP WIZARD
+// ════════════════════════════════════════════════════════════════
+let S_setup = { step: 1, status: null, selectedDada: [], selectedComfyui: [], downloads: [] };
+
+async function checkSetupStatus() {
+  try {
+    const res = await api('/api/setup/status');
+    if (res.firstRun) {
+      S_setup.status = res;
+      showSetupWizard();
+    }
+  } catch (e) {
+    console.warn('Setup status check failed:', e.message);
+  }
+}
+
+function showSetupWizard() {
+  const overlay = document.getElementById('setup-overlay');
+  overlay.style.display = 'flex';
+
+  const s = S_setup.status;
+  const hw = s.hardware;
+
+  // Step 1: Hardware info
+  document.getElementById('setup-hw-card').innerHTML =
+    '<div class="hw-grid">' +
+    '<div class="hw-item"><span class="hw-value">' + hw.ramTotalGB + 'GB</span><span class="hw-label">RAM</span></div>' +
+    '<div class="hw-item"><span class="hw-value">' + hw.cpuCores + '</span><span class="hw-label">CPU Cores</span></div>' +
+    '<div class="hw-item"><span class="hw-value">' + (hw.gpu ? hw.gpu.vendor + ' ' + (hw.gpu.model || '') : 'None') + '</span><span class="hw-label">GPU</span></div>' +
+    '<div class="hw-item"><span class="hw-value tier-' + s.tier + '">' + s.tier.toUpperCase() + '</span><span class="hw-label">Recommended Tier</span></div>' +
+    '</div>';
+
+  // Step 2: Populate DaDa model options
+  const allModels = [];
+  if (s.recommendations) {
+    for (const tier of s.recommendations) {
+      for (const m of tier.models) {
+        if (!allModels.find(x => x.id === m.id)) {
+          allModels.push({ ...m, tier: tier.tier, url: getModelDownloadUrl(m.id) });
+        }
+      }
+    }
+  }
+  // Add fallback models if none from server
+  if (allModels.length === 0) {
+    const fbs = s.recommendations && s.recommendations.length > 0 ? [] : FALLBACK_MODELS;
+    for (const m of fbs) {
+      allModels.push({ ...m, url: getModelDownloadUrl(m.id) });
+    }
+  }
+  // Sort by size (smallest first)
+  allModels.sort((a, b) => (a.url ? 1 : 0) - (b.url ? 1 : 0));
+
+  document.getElementById('setup-dada-models').innerHTML = allModels.map(m => {
+    const hasLocal = s.modelCount > 0;
+    const hasUrl = !!m.url;
+    return '<label class="setup-model-card' + (!hasUrl ? ' disabled' : '') + '">' +
+      '<input type="checkbox" name="setup-dada-model" value="' + esc(m.id) + '" ' +
+      'data-desc="' + esc(m.description) + '" data-url="' + esc(m.url || '') + '" ' +
+      (!hasUrl ? 'disabled' : '') + '>' +
+      '<div class="setup-model-info">' +
+      '<span class="setup-model-name">' + esc(m.description) + '</span>' +
+      '<span class="setup-model-why">' + esc(m.why || m.tier) + (hasUrl ? '' : ' · No download URL') + '</span>' +
+      '</div>' +
+      '<span class="setup-model-tier tier-' + (m.tier || 'minimal') + '">' + (m.tier || 'minimal') + '</span>' +
+      '</label>';
+  }).join('');
+
+  // Step 2: Populate ComfyUI model options
+  let comfyHtml = '';
+  if (s.comfyui && s.comfyui.installed) {
+    document.getElementById('setup-comfyui-hint').textContent = 'ComfyUI detected! Select models to download into ComfyUI\'s model directories.';
+    if (s.comfyuiModels) {
+      comfyHtml = s.comfyuiModels.map(m =>
+        '<label class="setup-model-card' + (m.downloaded ? ' downloaded' : '') + '">' +
+        '<input type="checkbox" name="setup-comfyui-model" value="' + esc(m.id) + '" ' +
+        'data-desc="' + esc(m.name) + '" data-url="' + esc(m.downloadUrl) + '" ' +
+        'data-target="' + esc(m.targetDir) + '" ' +
+        (m.downloaded ? 'disabled checked' : '') + '>' +
+        '<div class="setup-model-info">' +
+        '<span class="setup-model-name">' + esc(m.name) + ' <span class="setup-model-size">' + esc(m.size) + '</span></span>' +
+        '<span class="setup-model-why">' + esc(m.description) + '</span>' +
+        '</div>' +
+        '<span class="setup-model-status">' + (m.downloaded ? 'Installed' : '') + '</span>' +
+        '</label>'
+      ).join('');
+    }
+  } else {
+    document.getElementById('setup-comfyui-hint').innerHTML =
+      'ComfyUI is not yet installed. <a href="javascript:void(0)" onclick="document.getElementById(\'setup-install-comfyui-hint\').style.display=\'block\'">Install it here</a>, then select models to download.';
+    comfyHtml = '<div class="setup-comfyui-empty" id="setup-install-comfyui-hint">' +
+      '<p>ComfyUI powers local image generation (txt2img, img2img, video, upscale, etc.).</p>' +
+      '<p>Installation requires <strong>Python 3.10+</strong> and <strong>Git</strong>. Dependencies will be auto-installed.</p>' +
+      '<button class="setup-btn setup-btn-outline" onclick="setupInstallComfyUI()">Install ComfyUI</button>' +
+      '<p class="setup-small">Or <a href="https://github.com/comfyanonymous/ComfyUI" target="_blank">install manually</a> and refresh.</p>' +
+      '</div>';
+  }
+  document.getElementById('setup-comfyui-models').innerHTML = comfyHtml;
+
+  // Pre-select first available Dada model
+  const firstAvailable = document.querySelector('#setup-dada-models input:not([disabled])');
+  if (firstAvailable) firstAvailable.checked = true;
+}
+
+function setupNext() {
+  const cur = document.getElementById('setup-step-' + S_setup.step);
+  if (cur) cur.style.display = 'none';
+  S_setup.step = Math.min(S_setup.step + 1, 5);
+  const next = document.getElementById('setup-step-' + S_setup.step);
+  if (next) next.style.display = 'block';
+  updateSetupSteps();
+
+  // Step 4: load ComfyUI status
+  if (S_setup.step === 4) {
+    loadSetupComfyUIStatus();
+  }
+}
+
+function setupPrev() {
+  const cur = document.getElementById('setup-step-' + S_setup.step);
+  if (cur) cur.style.display = 'none';
+  S_setup.step = Math.max(S_setup.step - 1, 1);
+  const prev = document.getElementById('setup-step-' + S_setup.step);
+  if (prev) prev.style.display = 'block';
+  updateSetupSteps();
+}
+
+function updateSetupSteps() {
+  document.querySelectorAll('.setup-step').forEach(el => {
+    const n = parseInt(el.dataset.step);
+    el.classList.toggle('active', n < S_setup.step);
+    el.classList.toggle('current', n === S_setup.step);
+  });
+}
+
+async function setupStartDownload() {
+  // Collect selected models
+  const dadaModels = document.querySelectorAll('#setup-dada-models input[type="checkbox"]:checked:not([disabled])');
+  const comfyModels = document.querySelectorAll('#setup-comfyui-models input[type="checkbox"]:checked:not([disabled])');
+
+  const toDownload = [];
+  dadaModels.forEach(cb => {
+    toDownload.push({
+      id: cb.value,
+      desc: cb.dataset.desc || cb.value,
+      url: cb.dataset.url,
+      category: 'dada',
+      targetDir: '',
+    });
+  });
+  comfyModels.forEach(cb => {
+    toDownload.push({
+      id: cb.value,
+      desc: cb.dataset.desc || cb.value,
+      url: cb.dataset.url,
+      category: 'comfyui',
+      targetDir: cb.dataset.target || '',
+    });
+  });
+
+  if (toDownload.length === 0) {
+    setupNext();
+    return;
+  }
+
+  S_setup.downloads = toDownload;
+  setupNext(); // Move to step 3
+
+  // Render download items
+  document.getElementById('setup-dl-list').innerHTML = toDownload.map(d =>
+    '<div class="setup-dl-item" id="setup-dl-item-' + esc(d.id) + '">' +
+    '<span class="setup-dl-name">' + esc(d.desc) + '</span>' +
+    '<span class="setup-dl-cat">' + d.category + '</span>' +
+    '<div class="setup-dl-bar"><div class="setup-dl-fill" id="setup-dl-fill-' + esc(d.id) + '"></div></div>' +
+    '<span class="setup-dl-stat" id="setup-dl-stat-' + esc(d.id) + '">Waiting...</span>' +
+    '</div>'
+  ).join('');
+
+  // Download sequentially
+  let hasError = false;
+  for (const d of toDownload) {
+    if (!d.url) {
+      document.getElementById('setup-dl-stat-' + d.id).textContent = 'No URL — skipped';
+      continue;
+    }
+
+    try {
+      await downloadViaSSE(d);
+    } catch (e) {
+      document.getElementById('setup-dl-stat-' + d.id).textContent = 'Failed: ' + e.message;
+      hasError = true;
+    }
+  }
+
+  const nextBtn = document.getElementById('setup-dl-next-btn');
+  nextBtn.disabled = false;
+  nextBtn.textContent = hasError ? 'Continue (some failed) →' : 'Continue →';
+}
+
+function downloadViaSSE(dl) {
+  return new Promise((resolve, reject) => {
+    const fillEl = document.getElementById('setup-dl-fill-' + dl.id);
+    const statEl = document.getElementById('setup-dl-stat-' + dl.id);
+
+    const formatSpeed = (bytesPerSec) => {
+      if (bytesPerSec < 1024) return bytesPerSec.toFixed(0) + ' B/s';
+      if (bytesPerSec < 1048576) return (bytesPerSec / 1024).toFixed(1) + ' KB/s';
+      return (bytesPerSec / 1048576).toFixed(1) + ' MB/s';
+    };
+    const formatSize = (bytes) => {
+      if (bytes < 1048576) return (bytes / 1024).toFixed(0) + ' KB';
+      return (bytes / 1048576).toFixed(1) + ' MB';
+    };
+
+    fetch('/api/models/download-stream', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: dl.url, filename: dl.id })
+    }).then(async (res) => {
+      if (!res.ok) throw new Error('Server error ' + res.status);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === 'progress') {
+                const pct = data.percent || 0;
+                fillEl.style.width = pct + '%';
+                let status = pct + '%';
+                if (data.speed > 0) status += ' · ' + formatSpeed(data.speed);
+                if (data.total > 0) status += ' · ' + formatSize(data.loaded) + ' / ' + formatSize(data.total);
+                statEl.textContent = status;
+              } else if (eventType === 'complete') {
+                fillEl.style.width = '100%';
+                fillEl.classList.add('done');
+                statEl.textContent = 'Done: ' + data.filename;
+                resolve(data);
+              } else if (eventType === 'error') {
+                fillEl.classList.add('error');
+                statEl.textContent = 'Error: ' + data.message;
+                reject(new Error(data.message));
+              }
+            } catch { /* skip */ }
+            eventType = '';
+          }
+        }
+      }
+    }).catch(reject);
+  });
+}
+
+async function setupComplete() {
+  const comfyuiEndpoint = document.getElementById('setup-comfyui-endpoint').value.trim();
+  try {
+    await api('/api/setup/complete', {
+      method: 'POST',
+      body: JSON.stringify({ comfyuiEndpoint: comfyuiEndpoint || undefined })
+    });
+
+    // Summary for step 5
+    const lines = [];
+    const dadaModels = document.querySelectorAll('#setup-dada-models input[type="checkbox"]:checked');
+    const comfyModels = document.querySelectorAll('#setup-comfyui-models input[type="checkbox"]:checked');
+    if (dadaModels.length > 0) lines.push(dadaModels.length + ' DaDa model(s)');
+    if (comfyModels.length > 0) lines.push(comfyModels.length + ' ComfyUI model(s)');
+    if (comfyuiEndpoint) lines.push('ComfyUI endpoint configured');
+    document.getElementById('setup-done-summary').textContent =
+      lines.length > 0 ? lines.join(' · ') + ' — ready to go.' : 'DaDa is ready to go.';
+  } catch (e) {
+    console.warn('Setup complete failed:', e.message);
+  }
+  setupNext();
+}
+
+async function setupInstallComfyUI() {
+  const btn = document.getElementById('setup-comfyui-install-btn');
+  const statusEl = document.getElementById('setup-comfyui-status-text');
+  if (btn) { btn.disabled = true; btn.textContent = 'Installing...'; }
+
+  try {
+    const res = await fetch('/api/setup/comfyui/install', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ installDir: '' })
+    });
+
+    if (!res.ok) throw new Error('Server error ' + res.status);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      let eventType = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (eventType === 'progress') {
+              statusEl.textContent = data.message || data.stage;
+            } else if (eventType === 'complete') {
+              statusEl.textContent = data.message || 'ComfyUI installed!';
+              if (btn) { btn.textContent = 'Installed ✓'; btn.classList.add('done'); }
+              // Refresh setup status
+              S_setup.status = await api('/api/setup/status');
+              showSetupWizard();
+            } else if (eventType === 'error') {
+              statusEl.textContent = 'Install failed: ' + data.message;
+              if (btn) { btn.disabled = false; btn.textContent = 'Retry Install'; }
+            }
+          } catch { /* skip */ }
+          eventType = '';
+        }
+      }
+    }
+  } catch (e) {
+    statusEl.textContent = 'Install failed: ' + e.message;
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry Install'; }
+  }
+}
+
+async function loadSetupComfyUIStatus() {
+  const dot = document.querySelector('#setup-comfyui-status .setup-status-dot');
+  const text = document.getElementById('setup-comfyui-status-text');
+  const actions = document.getElementById('setup-comfyui-actions');
+  const s = S_setup.status;
+
+  if (s.comfyui && s.comfyui.installed) {
+    dot.classList.add('online');
+    text.textContent = 'ComfyUI installed' + (s.comfyui.running ? ' and running' : ' (not running)') +
+      (s.comfyui.path ? ' at ' + s.comfyui.path : '');
+    if (actions) actions.style.display = 'none';
+  } else {
+    dot.classList.add('offline');
+    text.textContent = 'ComfyUI not installed. Install it for local image generation.';
+    if (actions) actions.style.display = 'block';
+  }
+}
+
+function setupDismiss() {
+  document.getElementById('setup-overlay').style.display = 'none';
+  // Refresh model list
+  try { loadLocalModels(); } catch (e) { /* ok */ }
+}
+
+// ════════════════════════════════════════════════════════════════
 
 async function loadLocalModels() {
   try {
@@ -2761,6 +3190,19 @@ async function init() {
   // Cancel button
   document.getElementById('cancel-btn').addEventListener('click', cancelTask);
 
+  // Pause button
+  document.getElementById('pause-btn').addEventListener('click', pauseTask);
+
+  // Resume buttons (with and without feedback)
+  document.getElementById('resume-btn').addEventListener('click', () => resumeTask());
+  document.getElementById('resume-feedback-btn').addEventListener('click', () => {
+    const feedback = document.getElementById('feedback-input').value;
+    resumeTask(feedback);
+  });
+
+  // Cancel from paused state
+  document.getElementById('cancel-paused-btn').addEventListener('click', cancelTask);
+
   // Retry / Replay
   document.getElementById('retry-btn').addEventListener('click', retryTask);
   document.getElementById('replay-btn').addEventListener('click', replayTask);
@@ -2976,6 +3418,9 @@ async function init() {
 
   // Periodic status check
   setInterval(loadSystemStatus, 30000);
+
+  // Show setup wizard on first run
+  await checkSetupStatus();
 }
 
 // ── PWA: Install Prompt ──────────────────────────────────────────────────────────

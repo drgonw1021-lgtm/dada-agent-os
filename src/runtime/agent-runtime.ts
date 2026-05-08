@@ -926,9 +926,11 @@ ${toolContext}
     let sm = new AgentStateMachine(taskId, input.goal, input.taskLineageId ?? taskId);
     const savedMachine = await AgentStateMachine.loadFromDisk(taskId);
     let resumeGoal: string | null = null;
+    let savedContextHistory: { role: string; content: string; tool_call_id?: string; name?: string }[] = [];
     if (savedMachine) {
       sm = savedMachine;
-      console.log(`[RUNTIME] Resuming task ${taskId} from saved state: ${sm.getState()}`);
+      savedContextHistory = sm.getContextHistory();
+      console.log(`[RUNTIME] Resuming task ${taskId} from saved state: ${sm.getState()}, contextHistory: ${savedContextHistory.length} messages`);
       this.deps.progress?.emit(taskId, {
         type: "task.resumed",
         payload: { state: sm.getState(), savedAt: savedMachine.serialize().savedAt },
@@ -1382,7 +1384,8 @@ ${toolContext}
     let previousGaps: string[] = []; // Track gaps across retries for escalation
 
     for (let retryCount = 0; retryCount < DEGRADATION_PHASES; retryCount++) {
-      let contextHistory: { role: string; content: string; tool_call_id?: string; name?: string }[] = [];
+      let contextHistory: { role: string; content: string; tool_call_id?: string; name?: string }[] =
+        retryCount === 0 ? savedContextHistory : [];
       if (retryCount > 0) {
         const phase = retryCount;
 
@@ -1594,6 +1597,7 @@ ${toolContext}
           const shouldPause = await input.checkPause().catch(() => false);
           if (shouldPause) {
             syncContext();
+            sm.setContextHistory(contextHistory);
             sm.toPaused();
             await sm.saveToDisk().catch(() => {});
             emit("task.paused", { state: sm.getState(), cycle });
@@ -1688,6 +1692,7 @@ ${toolContext}
               `🎭 你现在的身份：${intent.persona.name} | 专业：${intent.persona.expertise} | 风格：${intent.persona.tone}`,
               ``,
               resumeGoal && cycle === 1 ? `## 🔄 恢复上下文 — 之前的执行进度\n${resumeGoal}\n` : "",
+              sm.getPendingFeedback() && cycle === 1 ? `## 👤 用户反馈 — 请据此调整方向\n${sm.getPendingFeedback()}\n` : "",
               input.projectContext ? `## 📂 项目上下文 — 之前在这个项目中做了什么\n${input.projectContext}\n` : "",
               `任务类型：${intent.taskType} | 输出格式：${intent.outputFormat} | 第${cycle}/${this.deps.maxPlanningCycles}轮`,
               `task.planner: ${taskPlannerUsed ? '已用' : '可用(仅一次)'} | 已写文件: ${hasWrittenFile ? '是' : '否'}`,
@@ -1774,6 +1779,9 @@ ${toolContext}
 
         console.log(`[RUNTIME] Cycle ${cycle}: executedTools=${executedTools}, planTextLen=${rawPlanText.length}, toolSteps=${toolSteps.length}, historyLen=${history.length}`);
         contextHistory = history; // carry assistant+tool messages to next cycle
+        if (cycle === 1 && sm.getPendingFeedback()) {
+          sm.setPendingFeedback(undefined); // consumed
+        }
         steps.push({ step: stepCounter++, action: "plan", reasoning: rawPlanText });
         this.deps.audit.append(taskId, { step: stepCounter - 1, action: "plan", reasoning: rawPlanText });
         // Add tool execution steps into the main step log

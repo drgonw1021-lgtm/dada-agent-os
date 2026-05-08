@@ -212,10 +212,24 @@
 
       </div>
 
-      <!-- Cancel button (visible during run) -->
+      <!-- Task control bar (visible during run) -->
       <div class="cancel-bar" id="cancel-bar" style="display:none">
+        <button id="pause-btn" class="action-btn pause-btn" title="Pause task">⏸ Pause</button>
         <button id="cancel-btn" class="action-btn danger" data-i18n="cancel">Cancel</button>
         <span class="cancel-goal" id="task-goal-display"></span>
+      </div>
+
+      <!-- Paused state: feedback + resume -->
+      <div class="feedback-bar" id="feedback-bar" style="display:none">
+        <div class="feedback-row">
+          <textarea id="feedback-input" class="feedback-input" placeholder="Give feedback or guidance before resuming..." rows="2"></textarea>
+          <div class="feedback-actions">
+            <button id="resume-btn" class="action-btn primary">▶ Resume</button>
+            <button id="resume-feedback-btn" class="action-btn primary">▶ Resume with feedback</button>
+            <button id="cancel-paused-btn" class="action-btn danger">Cancel</button>
+          </div>
+        </div>
+        <span class="cancel-goal" id="paused-goal-display"></span>
       </div>
 
       <!-- Execution Timeline -->
@@ -309,6 +323,103 @@
   </footer>
 
 </div><!-- /#app -->
+
+<!-- ════════════════════════════════════════════════════════════════
+     SETUP WIZARD OVERLAY
+     ════════════════════════════════════════════════════════════════ -->
+<div class="setup-overlay" id="setup-overlay" style="display:none">
+  <div class="setup-container">
+    <div class="setup-steps" id="setup-steps">
+      <span class="setup-step active" data-step="1">1. Welcome</span>
+      <span class="setup-step-arrow">→</span>
+      <span class="setup-step" data-step="2">2. Select Models</span>
+      <span class="setup-step-arrow">→</span>
+      <span class="setup-step" data-step="3">3. Download</span>
+      <span class="setup-step-arrow">→</span>
+      <span class="setup-step" data-step="4">4. ComfyUI</span>
+      <span class="setup-step-arrow">→</span>
+      <span class="setup-step" data-step="5">5. Done</span>
+    </div>
+
+    <!-- Step 1: Welcome -->
+    <div class="setup-panel" id="setup-step-1">
+      <div class="setup-welcome-icon">D</div>
+      <h1 class="setup-title">Welcome to DaDa</h1>
+      <p class="setup-desc">Your autonomous AI agent is ready. Let's set up the models you need in a few steps.</p>
+      <div class="setup-hw-card" id="setup-hw-card"></div>
+      <button class="setup-btn" onclick="setupNext()">Get Started →</button>
+      <p class="setup-skip-link" onclick="setupDismiss()">Skip for now, I'll set up later</p>
+    </div>
+
+    <!-- Step 2: Model Selection -->
+    <div class="setup-panel" id="setup-step-2" style="display:none">
+      <h2 class="setup-title">Choose Models to Download</h2>
+      <p class="setup-desc">Select the models you want. You can always add more later in Settings.</p>
+
+      <div class="setup-model-section">
+        <h3 class="setup-model-cat">DaDa Models <span class="setup-cat-badge">Text & Chat</span></h3>
+        <p class="setup-cat-desc">GGUF models for local AI conversation and task execution. Stored in <code>models/</code>.</p>
+        <div class="setup-model-grid" id="setup-dada-models"></div>
+      </div>
+
+      <div class="setup-model-section">
+        <h3 class="setup-model-cat">ComfyUI Models <span class="setup-cat-badge">Image & Video</span></h3>
+        <p class="setup-cat-desc" id="setup-comfyui-hint">Safetensors checkpoints for local image/video generation. Requires ComfyUI.</p>
+        <div class="setup-model-grid" id="setup-comfyui-models"></div>
+      </div>
+
+      <div class="setup-actions">
+        <button class="setup-btn setup-btn-ghost" onclick="setupPrev()">← Back</button>
+        <button class="setup-btn" onclick="setupStartDownload()" id="setup-dl-btn">Download Selected</button>
+        <p class="setup-skip-link" onclick="setupNext()">Skip downloads, continue →</p>
+      </div>
+    </div>
+
+    <!-- Step 3: Download Progress -->
+    <div class="setup-panel" id="setup-step-3" style="display:none">
+      <h2 class="setup-title">Downloading Models</h2>
+      <div class="setup-dl-list" id="setup-dl-list"></div>
+      <div class="setup-actions">
+        <button class="setup-btn" onclick="setupNext()" id="setup-dl-next-btn" disabled>Continue →</button>
+      </div>
+    </div>
+
+    <!-- Step 4: ComfyUI Configuration -->
+    <div class="setup-panel" id="setup-step-4" style="display:none">
+      <h2 class="setup-title">Image Generation Setup</h2>
+      <p class="setup-desc">DaDa uses ComfyUI for local image and video generation. Configure it below.</p>
+      <div id="setup-comfyui-card" class="setup-comfyui-card">
+        <div class="setup-comfyui-status" id="setup-comfyui-status">
+          <span class="setup-status-dot"></span>
+          <span id="setup-comfyui-status-text">Checking ComfyUI status...</span>
+        </div>
+        <div id="setup-comfyui-actions" style="display:none">
+          <button class="setup-btn setup-btn-outline" onclick="setupInstallComfyUI()" id="setup-comfyui-install-btn">
+            Install ComfyUI
+          </button>
+        </div>
+      </div>
+      <div class="setup-field">
+        <label class="setup-label">ComfyUI Endpoint</label>
+        <input type="text" id="setup-comfyui-endpoint" class="settings-input"
+               placeholder="http://127.0.0.1:8188" value="http://127.0.0.1:8188" />
+        <span class="setup-field-hint">The URL where ComfyUI runs. Default is localhost:8188.</span>
+      </div>
+      <div class="setup-actions">
+        <button class="setup-btn setup-btn-ghost" onclick="setupPrev()">← Back</button>
+        <button class="setup-btn" onclick="setupComplete()">Save & Finish</button>
+      </div>
+    </div>
+
+    <!-- Step 5: Done -->
+    <div class="setup-panel" id="setup-step-5" style="display:none">
+      <div class="setup-done-icon">✓</div>
+      <h2 class="setup-title">You're All Set!</h2>
+      <p class="setup-desc" id="setup-done-summary"></p>
+      <button class="setup-btn" onclick="setupDismiss()">Start Using DaDa →</button>
+    </div>
+  </div>
+</div>
 
 <!-- ════════════════════════════════════════════════════════════════
      DRAWER BACKDROP

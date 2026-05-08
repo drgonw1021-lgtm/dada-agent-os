@@ -3,7 +3,7 @@ productName: DaDa
 copyright: Copyright 2026 Orion Wang
 
 directories:
-  output: dist-electron
+  output: E:\dada-build
   buildResources: electron/resources
 
 files:
@@ -13,14 +13,7 @@ files:
   - package.json
   - node_modules/**/*
 
-extraResources:
-  - from: models
-    to: models
-    filter:
-      - "*.gguf"
-      - "*.bin"
-      - "*.mmproj"
-
+extraResources: []
 asar: true
 asarUnpack:
   - "node_modules/node-llama-cpp/**"
@@ -30,7 +23,7 @@ asarUnpack:
 win:
   target:
     - nsis
-  icon: web/dada-icon.jpg
+  icon: web/dada-icon.ico
   artifactName: ${productName}-${version}-${arch}.${ext}
   signAndEditExecutable: false
 
@@ -40,8 +33,8 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: DaDa
-  installerIcon: web/dada-icon.jpg
-  uninstallerIcon: web/dada-icon.jpg
+  installerIcon: web/dada-icon.ico
+  uninstallerIcon: web/dada-icon.ico
 
 mac:
   target:

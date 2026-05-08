@@ -216,7 +216,6 @@ export class TaskStore {
   async markPaused(taskId: string): Promise<TaskRecord | null> {
     return this.update(taskId, (item) => {
       item.status = "paused";
-      item.cancelRequested = true;
     });
   }
 

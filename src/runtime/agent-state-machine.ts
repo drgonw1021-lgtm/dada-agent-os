@@ -51,6 +51,7 @@ export interface StateContext {
   stepCounter: number;
   steps: ExecutionStep[];
   observationNotes: string[];
+  pendingFeedback?: string;
   taskPlannerUsed: boolean;
   consecutiveSearchCycles: number;
   consecutiveSameToolCycles: number;
@@ -98,6 +99,7 @@ export interface SerializedMachine {
   context: StateContext;
   savedAt: string;
   prePauseState?: AgentState | null;
+  contextHistory?: { role: string; content: string; tool_call_id?: string; name?: string }[];
 }
 
 // ─── Machine ────────────────────────────────────────────────────────────────────
@@ -181,6 +183,7 @@ export class AgentStateMachine {
   }
 
   private prePauseState: AgentState | null = null;
+  private _contextHistory: { role: string; content: string; tool_call_id?: string; name?: string }[] = [];
 
   resumeFromPaused(): AgentState {
     if (this.state !== "paused") {
@@ -195,6 +198,22 @@ export class AgentStateMachine {
 
   getPrePauseState(): AgentState | null {
     return this.prePauseState;
+  }
+
+  getContextHistory(): { role: string; content: string; tool_call_id?: string; name?: string }[] {
+    return this._contextHistory;
+  }
+
+  setContextHistory(history: { role: string; content: string; tool_call_id?: string; name?: string }[]): void {
+    this._contextHistory = history;
+  }
+
+  getPendingFeedback(): string | undefined {
+    return this.context.pendingFeedback;
+  }
+
+  setPendingFeedback(feedback: string | undefined): void {
+    this.context.pendingFeedback = feedback || undefined;
   }
 
   // ── Events ────────────────────────────────────────────────────────────────
@@ -217,6 +236,7 @@ export class AgentStateMachine {
       context: { ...this.context },
       savedAt: new Date().toISOString(),
       prePauseState: this.prePauseState,
+      contextHistory: this._contextHistory,
     };
   }
 
@@ -225,6 +245,7 @@ export class AgentStateMachine {
     m.state = data.state;
     m.context = data.context;
     m.prePauseState = data.prePauseState ?? null;
+    m._contextHistory = data.contextHistory ?? [];
     return m;
   }
 
