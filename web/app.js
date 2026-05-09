@@ -453,11 +453,6 @@ async function api(path, opts = {}) {
   return ct.includes('json') ? res.json() : res.text();
 }
 
-function esc(str) {
-  if (!str) return '';
-  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 // ── Drawer System ───────────────────────────────────────────────────────────────
 function openDrawer(name) {
   closeAllDrawers();
