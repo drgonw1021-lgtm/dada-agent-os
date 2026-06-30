@@ -341,6 +341,7 @@ export class TaskQueue {
   }
 
   private async executeTask(task: TaskRecord): Promise<void> {
+    console.log(`[TaskQueue] executeTask START taskId=${task.taskId.slice(0,8)} goal="${task.goal.slice(0,50)}"`);
     await this.taskStore.markRunning(task.taskId);
     try {
       const taskTimeout = this.options.taskTimeoutMs ?? 1_800_000; // default 30 min
@@ -383,12 +384,15 @@ export class TaskQueue {
         : result.artifacts;
       result.artifacts = artifacts;
 
+      console.log(`[TaskQueue] executeTask DONE taskId=${task.taskId.slice(0,8)} success=${result.success}`);
       await this.taskStore.markCompleted(task.taskId, {
         summary: result.summary,
         artifacts,
         result
       });
     } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error(`[TaskQueue] executeTask FAIL taskId=${task.taskId.slice(0,8)} error="${errMsg.slice(0,100)}"`);
       if (error instanceof TaskPausedForApprovalError) {
         await this.taskStore.markWaitingApproval(task.taskId, {
           approvalId: error.approvalId,

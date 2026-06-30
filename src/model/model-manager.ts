@@ -296,7 +296,7 @@ export class ModelManager {
 
       console.log(`[ModelManager] Downloading model to ${outputPath}...`);
 
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(600_000) });
       if (!response.ok) {
         throw new Error(`Download failed: ${response.status}`);
       }
@@ -358,7 +358,7 @@ export class ModelManager {
 
     console.log(`[ModelManager] Streaming download to ${outputPath}${resumed ? ` (resuming from ${existingSize} bytes)` : ""}...`);
 
-    const response = await fetch(url, { headers });
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(600_000) });
     if (!response.ok && response.status !== 206) {
       throw new Error(`Download failed: ${response.status} ${response.statusText}`);
     }

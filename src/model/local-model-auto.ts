@@ -21,13 +21,15 @@ export async function detectAvailableProviders(
   endpoints: LocalEndpoint[] = DEFAULT_LOCAL_ENDPOINTS
 ): Promise<LocalEndpoint[]> {
   const available: LocalEndpoint[] = [];
+  const DETECTION_TIMEOUT_MS = 10_000; // 10s per endpoint
 
   for (const ep of endpoints) {
     try {
       const testProvider = createProvider(ep.type, ep.endpoint);
       await testProvider.complete({
         model: "test",
-        messages: [{ role: "user", content: "hi" }]
+        messages: [{ role: "user", content: "hi" }],
+        signal: AbortSignal.timeout(DETECTION_TIMEOUT_MS),
       });
       available.push(ep);
     } catch {

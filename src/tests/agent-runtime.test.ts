@@ -226,7 +226,8 @@ test("agent runtime pauses when checkPause returns true", async () => {
 
   const runtime = new AgentRuntime(deps);
   const result = await runtime.runTask({
-    goal: "Task that gets paused",
+    goal: "Research market trends and compile a report", // non-simple task → full pipeline
+    taskType: "research", // explicit type bypasses simple complexity
     taskId: pauseTaskId,
     checkPause: async () => {
       pauseChecked = true;

@@ -33,7 +33,8 @@ export class LocalProvider implements ModelProvider {
           temperature: request.temperature,
           num_predict: request.maxTokens
         }
-      })
+      }),
+      signal: request.signal,
     });
 
     if (!response.ok) {

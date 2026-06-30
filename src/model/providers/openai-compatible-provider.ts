@@ -69,7 +69,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const response = await fetch(joinEndpoint(this.options.endpoint, "/v1/chat/completions"), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: request.signal,
     });
 
     if (!response.ok) {

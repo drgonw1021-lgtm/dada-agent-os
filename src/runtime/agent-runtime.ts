@@ -40,11 +40,13 @@ export interface AgentRuntimeDeps {
       model: string;
       messages: { role: string; content: string; tool_call_id?: string; name?: string }[];
       tools?: FunctionDefinition[];
+      signal?: AbortSignal;
     }): Promise<{ content: string; toolCalls?: ToolCall[]; usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } }>;
     completeStream(request: {
       model: string;
       messages: { role: string; content: string; tool_call_id?: string; name?: string }[];
       tools?: FunctionDefinition[];
+      signal?: AbortSignal;
     }): AsyncIterable<{ content: string; toolCalls?: ToolCall[]; done: boolean; error?: string }>;
   };
   tools: {
@@ -186,7 +188,8 @@ const MINIMAL_SYSTEM_PROMPT = `你是 DaDa，一个自主 AI Agent。直接回�
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Race a promise against a timeout, clearing the timer on settle. */
+/** Race a promise against a timeout, clearing the timer on settle.
+ *  For network operations, prefer withAbortableTimeout which also aborts the HTTP request. */
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -199,16 +202,39 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   }
 }
 
+/** Race a promise against a timeout AND abort the underlying HTTP request via AbortController. */
+async function withAbortableTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+  controller: AbortController,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 // ─── Runtime ─────────────────────────────────────────────────────────────────
 
 export class AgentRuntime {
   constructor(private readonly deps: AgentRuntimeDeps) {}
-  private get _llmTimeout(): number { return this.deps.llmTimeoutMs ?? 120_000; }
+  private get _llmTimeout(): number { return this.deps.llmTimeoutMs ?? 60_000; }
 
   private get _toolTimeout(): number { return this.deps.toolTimeoutMs ?? 300_000; }
 
   private _timedComplete(request: Parameters<AgentRuntimeDeps["router"]["complete"]>[0]): Promise<Awaited<ReturnType<AgentRuntimeDeps["router"]["complete"]>>> {
-    return withTimeout(this.deps.router.complete(request), this._llmTimeout, "LLM call");
+    const controller = new AbortController();
+    request.signal = controller.signal;
+    return withAbortableTimeout(this.deps.router.complete(request), this._llmTimeout, "LLM call", controller);
   }
 
   private _timedExecute(name: string, args: unknown, ctx: { now: Date; taskId: string; taskLineageId: string; goal?: string }): Promise<unknown> {
@@ -243,9 +269,10 @@ export class AgentRuntime {
   ): Promise<string> {
     if (onToken) {
       const timeout = this._llmTimeout;
+      const controller = new AbortController();
       const streamPromise = (async () => {
         let fullContent = "";
-        for await (const chunk of this.deps.router.completeStream({ model, messages })) {
+        for await (const chunk of this.deps.router.completeStream({ model, messages, signal: controller.signal })) {
           if (chunk.error) throw new Error(chunk.error);
           if (chunk.content) {
             fullContent += chunk.content;
@@ -254,7 +281,7 @@ export class AgentRuntime {
         }
         return fullContent;
       })();
-      return withTimeout(streamPromise, timeout, "LLM stream");
+      return withAbortableTimeout(streamPromise, timeout, "LLM stream", controller);
     }
     const response = await this._timedComplete({ model, messages });
     this._emitUsage(response.usage);
@@ -795,7 +822,7 @@ export class AgentRuntime {
     const taskId = input.taskId ?? randomUUID();
     this._currentTaskId = taskId;
     this.deps.logger?.info("simple task started", { taskId, goal: input.goal.slice(0, 120), taskType: intent.taskType });
-    console.log(`[RUNTIME] Simple task: ${input.goal.slice(0, 80)}`);
+    console.log(`[RUNTIME] Simple task: ${input.goal.slice(0, 80)} (type=${intent.taskType})`);
 
     const steps: ExecutionStep[] = [];
     let stepCounter = 1;
@@ -805,26 +832,44 @@ export class AgentRuntime {
     emit("task.started", { taskType: intent.taskType, complexity: "simple" });
 
     try {
+      const model = input.modelOverrides?.plannerModel ?? this.deps.plannerModel;
       const messages = [
         { role: "system", content: currentDateTimeContext() + "\n\n" + MINIMAL_SYSTEM_PROMPT },
         { role: "user", content: `你现在的身份：${intent.persona.name}。专业领域：${intent.persona.expertise}。沟通风格：${intent.persona.tone}\n\n${input.goal}` }
       ];
 
-      const tools = this.buildToolDefinitions(intent.preferredTools)
-        .filter(t => t.name !== "task.planner");
+      let planText: string;
+      let toolSteps: ExecutionStep[] = [];
+      let executedTools = 0;
 
-      const stepRef = { value: stepCounter };
-      const { planText, executedTools, toolSteps, history } = await this.completeWithTools(
-        input.modelOverrides?.plannerModel ?? this.deps.plannerModel,
-        messages, tools,
-        { taskId, taskLineageId: input.taskLineageId ?? taskId, goal: input.goal, step: stepRef },
-        undefined, // no prior history
-        3 // max 3 tool calls for simple tasks
-      );
-
-      stepCounter = stepRef.value;
-      steps.push({ step: stepCounter++, action: "plan", reasoning: planText });
-      for (const ts of toolSteps) steps.push(ts);
+      // Pure conversational: no actionable keywords → direct response, NO tools
+      // Keep tools for weather (needs search) and queries with explicit action verbs
+      const hasActionIntent = /搜索|查找|查询|天气|weather|search|find|look\s*up|latest|recent|news/i.test(input.goal);
+      const isPureChat = (intent.taskType === "general" || intent.taskType === "weather") && !hasActionIntent;
+      if (isPureChat) {
+        console.log(`[RUNTIME] Simple conversational — using direct completion (no tools) model=${model}`);
+        const t0 = Date.now();
+        planText = await this.completeWithModel(model, messages);
+        console.log(`[RUNTIME] Direct completion done in ${Date.now() - t0}ms, len=${planText.length}`);
+        steps.push({ step: stepCounter++, action: "plan", reasoning: planText });
+      } else {
+        // Other simple tasks: lightweight tool calling (max 2 tool calls)
+        const tools = this.buildToolDefinitions(intent.preferredTools)
+          .filter(t => t.name !== "task.planner");
+        const stepRef = { value: stepCounter };
+        const result = await this.completeWithTools(
+          model, messages, tools,
+          { taskId, taskLineageId: input.taskLineageId ?? taskId, goal: input.goal, step: stepRef },
+          undefined, // no prior history
+          2 // max 2 tool calls for simple tasks
+        );
+        stepCounter = stepRef.value;
+        planText = result.planText;
+        executedTools = result.executedTools;
+        toolSteps = result.toolSteps;
+        steps.push({ step: stepCounter++, action: "plan", reasoning: planText });
+        for (const ts of toolSteps) steps.push(ts);
+      }
 
       // If model only made tool calls without text synthesis, do one final completion
       let finalSummary = planText.trim();
@@ -893,7 +938,9 @@ ${toolContext}
 
   async runTask(input: TaskInput): Promise<TaskResult> {
     const taskId = input.taskId ?? randomUUID();
+    const runStart = Date.now();
     this._currentTaskId = taskId;
+    console.log(`[RUNTIME] runTask START taskId=${taskId.slice(0,8)} goal="${input.goal.slice(0,60)}" type=${input.taskType || "auto"}`);
     this.thoughtTree = null;
     this.thoughtTreeNode = null;
     const plannerModel = input.modelOverrides?.plannerModel ?? this.deps.plannerModel;
@@ -951,12 +998,19 @@ ${toolContext}
     const intent = resolveTaskIntent(input);
 
     // Simple tasks: direct response, skip the heavy planning pipeline.
-    // Use full pipeline when the task needs pause support, is a resume, or has
-    // a tight maxSteps limit that requires cycle-level enforcement + auto-compile.
+    // Only use full pipeline for actual resumption or tight step budgets.
+    // checkPause is passed by task queue for all tasks — check it once
+    // to see if this is a resumed task that needs the pause-aware pipeline.
     const tightMaxSteps = this.deps.maxSteps <= 8;
-    const needsFullPipeline = input.checkPause || savedMachine || tightMaxSteps;
-    if (intent.complexity === "simple" && !needsFullPipeline) {
-      return this.runSimpleTask(input, intent);
+    if (intent.complexity === "simple" && !savedMachine && !tightMaxSteps) {
+      let activelyPaused = false;
+      if (input.checkPause) {
+        try { activelyPaused = await input.checkPause(); } catch { /* ignore */ }
+      }
+      if (!activelyPaused) {
+        console.log(`[RUNTIME] → runSimpleTask (fast path) goal="${input.goal.slice(0,50)}"`);
+        return this.runSimpleTask(input, intent);
+      }
     }
 
     // ── Mode detection: task (single agent) vs project (multi-agent pipeline) ──
@@ -1744,9 +1798,9 @@ ${toolContext}
           const msg = error instanceof Error ? error.message : String(error);
           const safeMsg = msg.replace(/"/g, "'").replace(/\n/g, " ").slice(0, 200);
           console.log(`[RUNTIME] Planner FAILED with error: ${safeMsg}`);
-          // 400 Bad Request = message format error, not a model issue — skip retry
-          const isBadRequest = msg.includes("400") || msg.includes("Bad Request");
-          if (!isBadRequest && !plannerModel.startsWith("builtin:")) {
+          // 4xx = client error (auth, rate-limit, bad request) — fail fast, don't retry with local model
+          const isClientError = /40[1349]|Bad Request|Unauthorized|Forbidden|Rate.?(limit|Limited)/i.test(msg);
+          if (!isClientError && !plannerModel.startsWith("builtin:")) {
             try {
               const fallbackModel = "builtin:default";
               console.log(`[RUNTIME] Planner failed (${safeMsg}), trying fallback model: ${fallbackModel}`);
@@ -1892,9 +1946,10 @@ ${toolContext}
         } else if (executedTools > 0) {
           consecutivePlannerFailures = 0;
           // Early success: if tools were executed and plan indicates DONE, exit the loop
-          const doneMatch = /^DONE\b|DONE\s/i.test(rawPlanText);
+          const donePattern = /(?:^|\n)\s*(?:DONE|任务完成|任务结束|工作完成|执行完毕|全部完成|✅)\s*[\n:：]|^DONE\b|DONE\s/i;
+          const doneMatch = donePattern.test(rawPlanText);
           if (doneMatch) {
-            doneReason = rawPlanText.replace(/^[\s\S]*?DONE\s*/i, "").trim() || "Task completed.";
+            doneReason = rawPlanText.replace(donePattern, "").trim() || "Task completed.";
             const doneStep: ExecutionStep = { step: stepCounter++, action: "done", reasoning: doneReason };
             steps.push(doneStep);
             this.deps.audit.append(taskId, doneStep);

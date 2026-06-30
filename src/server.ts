@@ -173,7 +173,6 @@ async function main() {
     },
     onSubmitTask: async (goal) => {
       const task = await taskQueue.enqueue({ goal, source: "manual" });
-      app.runtime.runTask({ goal, taskId: task.taskId }).catch(() => {});
       return { taskId: task.taskId };
     },
   });
@@ -714,7 +713,12 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  console.error("Failed to start server:", err);
-  process.exit(1);
-});
+export { main };
+
+const isEmbedded = process.env.DADA_EMBEDDED === "1";
+if (!isEmbedded) {
+  main().catch((err) => {
+    console.error("Failed to start server:", err);
+    process.exit(1);
+  });
+}

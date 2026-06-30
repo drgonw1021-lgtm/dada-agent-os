@@ -45,6 +45,10 @@ import { resolveTaskIntent } from "../../tasks/task-intent.js";
 
 export async function handleGetConfig(ctx: ServerContext) {
   const { app } = ctx;
+  const rawKey = app.config.cloudApiKey || "";
+  const maskedKey = rawKey.length > 8
+    ? rawKey.slice(0, 4) + "..." + rawKey.slice(-4)
+    : rawKey ? "****" : "";
   return {
     plannerModel: app.config.plannerModel,
     executorModel: app.config.executorModel,
@@ -58,7 +62,9 @@ export async function handleGetConfig(ctx: ServerContext) {
     lmstudioEndpoint: app.config.lmstudioEndpoint,
     vllmEndpoint: app.config.vllmEndpoint,
     llamaCppEndpoint: app.config.llamaCppEndpoint,
-    cloudApiKey: app.config.cloudApiKey,
+    cloudApiKeyMasked: maskedKey,
+    cloudApiKey: undefined, // never expose full key
+    hasCloudApiKey: rawKey.length > 0,
     envFiles: app.config.envFiles,
     modelsDir: app.config.modelsDir,
     taskStorePath: app.config.taskStorePath,

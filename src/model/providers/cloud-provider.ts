@@ -110,7 +110,8 @@ export class CloudProvider implements ModelProvider {
         "content-type": "application/json",
         authorization: `Bearer ${this.options.apiKey}`
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: request.signal,
     });
 
     if (!response.ok) {
@@ -233,7 +234,8 @@ export class CloudProvider implements ModelProvider {
         "content-type": "application/json",
         authorization: `Bearer ${this.options.apiKey}`
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: request.signal,
     });
 
     if (!response.ok) {
@@ -253,9 +255,28 @@ export class CloudProvider implements ModelProvider {
     let content = "";
     const accumulatedToolCalls: Map<number, { id: string; name: string; args: string }> = new Map();
 
+    // Per-chunk read timeout: 120s (generous — thinking models may pause)
+    const STREAM_CHUNK_TIMEOUT_MS = 120_000;
+    const readChunk = (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+      let timer: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Stream chunk read timed out after ${STREAM_CHUNK_TIMEOUT_MS / 1000}s`)), STREAM_CHUNK_TIMEOUT_MS);
+      });
+      return Promise.race([reader.read(), timeoutPromise]).finally(() => clearTimeout(timer));
+    };
+
+    // Listen for abort signal to cancel the reader
+    const onAbort = () => { try { reader.cancel(); } catch { /* best-effort */ } };
+    request.signal?.addEventListener("abort", onAbort, { once: true });
+
     try {
       while (true) {
-        const { done, value } = await reader.read();
+        // Check abort before blocking on read
+        if (request.signal?.aborted) {
+          yield { content, done: true, error: "Request aborted" };
+          break;
+        }
+        const { done, value } = await readChunk();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
@@ -310,6 +331,7 @@ export class CloudProvider implements ModelProvider {
         }
       }
     } finally {
+      request.signal?.removeEventListener("abort", onAbort);
       reader.releaseLock();
     }
 

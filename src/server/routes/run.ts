@@ -14,8 +14,15 @@ export async function handlePostRun(
   if (!goal) {
     return { status: 400, data: { error: "goal is required" } };
   }
-  const result = await ctx.app.runtime.runTask({ goal });
-  return { status: 200, data: { result } };
+  // Route through the task queue for proper lifecycle management (cancel, pause, artifacts)
+  const intent = resolveTaskIntent({ goal });
+  const task = await ctx.taskQueue.enqueue({
+    goal,
+    source: "manual",
+    taskType: intent.taskType,
+    outputFormat: intent.outputFormat,
+  });
+  return { status: 202, data: { task, intent } };
 }
 
 export async function handlePostRunAsync(
@@ -138,18 +145,37 @@ export function handleGetProgress(
   });
   res.write("\n");
 
-  // Replay history for late-connecting clients
+  // Attach listener FIRST to avoid race condition where events fire
+  // between getHistory and attach (would be silently lost).
+  const seenTypes = new Set<string>();
+  const listener = (ev: ProgressEvent) => {
+    seenTypes.add(ev.type);
+    res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
+    // If we just received a terminal event, close proactively
+    if (ev.type === "task.completed" || ev.type === "task.failed") {
+      if (!res.writableEnded) res.end();
+    }
+  };
+  ctx.app.progressManager.attach(taskId, listener);
+
+  // Replay history AFTER attach — duplicates for the same type are
+  // deduped via seenTypes (the listener already saw them live).
   const history = ctx.app.progressManager.getHistory(taskId);
   for (const ev of history) {
-    res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
+    if (!seenTypes.has(ev.type) || ev.type !== "task.completed" && ev.type !== "task.failed") {
+      res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
+    }
   }
 
-  const listener = (ev: ProgressEvent) => {
-    res.write(`event: ${ev.type}\ndata: ${JSON.stringify(ev)}\n\n`);
-  };
-
-  ctx.app.progressManager.attach(taskId, listener);
   req.on("close", () => {
     ctx.app.progressManager.detach(taskId, listener);
   });
+  // Safety: if no terminal event within 60s, close the stream
+  const safetyTimer = setTimeout(() => {
+    if (!res.writableEnded) {
+      res.write(`event: task.failed\ndata: ${JSON.stringify({ error: "SSE timeout — no terminal event received within 60s" })}\n\n`);
+      res.end();
+    }
+  }, 60_000);
+  req.on("close", () => clearTimeout(safetyTimer));
 }

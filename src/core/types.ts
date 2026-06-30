@@ -19,6 +19,9 @@ export interface ModelRequest {
   maxTokens?: number;
   /** Function definitions for structured tool calling */
   tools?: FunctionDefinition[];
+  /** AbortSignal to cancel the underlying HTTP request on timeout.
+   *  Providers MUST pass this to fetch(). The runtime sets it from withTimeout. */
+  signal?: AbortSignal;
 }
 
 export interface ModelResponse {

@@ -906,6 +906,17 @@ function watchTask(taskId) {
     } catch {}
   });
 
+  // Progress watchdog: if no progress event within 15s, show warning
+  let lastProgressTime = Date.now();
+  const WATCHDOG_MS = 15_000;
+  const watchdog = setInterval(() => {
+    if (Date.now() - lastProgressTime > WATCHDOG_MS) {
+      log('[no progress for 15s — task may be stuck]');
+      clearInterval(watchdog);
+    }
+  }, 5000);
+  S._watchdog = watchdog; // store for cleanup
+
   // Polling fallback: single poll function, reused on SSE error and by interval
   let pollAttempts = 0;
   const MAX_POLL_ATTEMPTS = 200; // ~5 min at 1.5s interval
@@ -953,9 +964,11 @@ function watchTask(taskId) {
 function stopWatch() {
   if (S.progressSource) { S.progressSource.close(); S.progressSource = null; }
   if (S.taskPollTimer) { clearInterval(S.taskPollTimer); S.taskPollTimer = null; }
+  if (S._watchdog) { clearInterval(S._watchdog); S._watchdog = null; }
 }
 
 function handleProgress(data) {
+  lastProgressTime = Date.now(); // reset watchdog
   const p = data.payload || data;
   if (!S.currentTask) S.currentTask = {};
   Object.assign(S.currentTask, p);
@@ -2166,9 +2179,10 @@ async function loadSetupComfyUIStatus() {
   }
 }
 
-function setupDismiss() {
+async function setupDismiss() {
+  // Mark setup as complete on the server so wizard doesn't reappear
+  try { await api('/api/setup/complete', { method: 'POST', body: '{}' }); } catch (e) { /* ok */ }
   document.getElementById('setup-overlay').style.display = 'none';
-  // Refresh model list
   try { loadLocalModels(); } catch (e) { /* ok */ }
 }
 
@@ -2507,7 +2521,17 @@ async function loadConfig() {
 
     // API endpoints
     setInputVal('settings-cloud-endpoint', data.cloudModelEndpoint);
-    setInputVal('settings-cloud-api-key', data.cloudApiKey || '');
+    // Show masked key placeholder; user types full key only when changing
+    const keyInput = document.getElementById('settings-cloud-api-key');
+    if (keyInput) {
+      if (data.hasCloudApiKey) {
+        keyInput.placeholder = 'API key configured (' + (data.cloudApiKeyMasked || '****') + ') — enter new key to change';
+        keyInput.value = '';
+      } else {
+        keyInput.placeholder = 'sk-...';
+        keyInput.value = '';
+      }
+    }
     setInputVal('settings-ollama-endpoint', data.localModelEndpoint);
     setInputVal('settings-lmstudio-endpoint', data.lmstudioEndpoint);
     setInputVal('settings-vllm-endpoint', data.vllmEndpoint);
@@ -2610,8 +2634,11 @@ async function saveModelSettings() {
   }
   try {
     await api('/api/config/model-settings', { method: 'POST', body });
-    showFeedback('model-save-feedback', true, 'Saved — restart required for model changes');
+    showFeedback('model-save-feedback', true, '✓ Applied — using live config immediately');
     await loadConfig();
+    // Also update the chat-area model selector
+    const modelSel = document.getElementById('model-select');
+    if (modelSel && body.plannerModel) modelSel.value = body.plannerModel;
   } catch (err) {
     showFeedback('model-save-feedback', false, err.message);
   }
@@ -3091,9 +3118,33 @@ async function init() {
         closeDrawer(name);
       } else {
         openDrawer(name);
+        // Auto-refresh config when opening settings
+        if (name === 'settings') loadSettings().catch(() => {});
       }
     });
   });
+
+  // Topbar model badge → quick-open settings
+  const modelBadge = document.getElementById('topbar-model-badge');
+  if (modelBadge) {
+    modelBadge.style.cursor = 'pointer';
+    modelBadge.title = 'Click to configure models & API';
+    modelBadge.addEventListener('click', () => {
+      closeAllDrawers();
+      openDrawer('settings');
+      loadSettings().catch(() => {});
+    });
+  }
+
+  // Show API warning if no cloud key configured
+  if (!S.config?.cloudApiKey) {
+    const goalEl = document.getElementById('goal');
+    if (goalEl) {
+      goalEl.placeholder = S.config?.plannerModel?.startsWith('cloud:')
+        ? '⚠ Configure your API Key in Settings (⚙) before running tasks...'
+        : 'Describe what you want DaDa to do...';
+    }
+  }
 
   // Drawer backdrop click to close
   document.getElementById('drawer-backdrop').addEventListener('click', () => closeAllDrawers());
