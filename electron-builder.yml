@@ -12,10 +12,17 @@ files:
   - electron/**/*
   - package.json
   - node_modules/**/*
+  - ".env.example"
+  - ".env"
+  - ".env.local"
 
 extraResources: []
 asar: true
 asarUnpack:
+  - "dist/**/*"
+  - "web/**/*"
+  - ".env"
+  - ".env.example"
   - "node_modules/node-llama-cpp/**"
   - "node_modules/sql.js/**"
   - "node_modules/playwright/**"
@@ -30,11 +37,13 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  allowElevation: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: DaDa
   installerIcon: web/dada-icon.ico
   uninstallerIcon: web/dada-icon.ico
+  deleteAppDataOnUninstall: false
 
 mac:
   target:

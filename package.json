@@ -1,6 +1,6 @@
 {
   "name": "dada",
-  "version": "0.5.4",
+  "version": "0.6.0",
   "productName": "DaDa",
   "description": "DaDa autonomous AI agent with built-in GGUF runtime, multi-model orchestration, automation, and self-learning",
   "author": {

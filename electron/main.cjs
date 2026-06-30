@@ -1,104 +1,164 @@
 "use strict";
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog } = require("electron");
-const { fork } = require("node:child_process");
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, shell } = require("electron");
 const path = require("node:path");
+const fs = require("node:fs");
 const http = require("node:http");
-
-const PORT = Number(process.env.PORT || "9877");
-const URL = `http://localhost:${PORT}`;
-const isDev = process.env.NODE_ENV === "development" || process.argv.includes("--dev");
+const { pathToFileURL } = require("node:url");
+const { exec } = require("node:child_process");
 
 let mainWindow = null;
 let tray = null;
-let serverProcess = null;
 let isQuitting = false;
+let serverPort = 9877;
 
-function startServer() {
-  return new Promise((resolve, reject) => {
-    const serverPath = path.join(__dirname, "..", "dist", "server.js");
+function resolveAppPaths() {
+  const devRoot = path.join(__dirname, "..");
+  const devServer = path.join(devRoot, "dist", "server.js");
 
-    serverProcess = fork(serverPath, [], {
-      env: { ...process.env },
-      stdio: ["ignore", "pipe", "pipe", "ipc"]
-    });
+  // In packaged app, import from asar path so ESM resolver finds node_modules/ inside asar.
+  // Asar auto-redirects dist/** to the unpacked files.
+  const packedAsarRoot = path.join(process.resourcesPath, "app.asar");
+  const packedServer = path.join(packedAsarRoot, "dist", "server.js");
+  const packedUnpacked = path.join(process.resourcesPath, "app.asar.unpacked");
+  try {
+    if (fs.existsSync(packedUnpacked)) {
+      return { appRoot: packedUnpacked, serverPath: packedServer };
+    }
+  } catch {}
 
-    let started = false;
-
-    serverProcess.stdout?.on("data", (chunk) => {
-      const text = chunk.toString();
-      process.stdout.write("[server] " + text);
-      if (!started && text.includes("DaDa UI running at")) {
-        started = true;
-        resolve();
-      }
-    });
-
-    serverProcess.stderr?.on("data", (chunk) => {
-      process.stderr.write("[server:err] " + chunk.toString());
-    });
-
-    serverProcess.on("error", (err) => {
-      if (!started) reject(err);
-    });
-
-    serverProcess.on("exit", (code) => {
-      if (!started) {
-        reject(new Error(`Server exited with code ${code} before starting`));
-      }
-    });
-
-    // Timeout after 30s
-    setTimeout(() => {
-      if (!started) reject(new Error("Server start timeout"));
-    }, 30000);
-  });
+  return { appRoot: devRoot, serverPath: devServer };
 }
 
-function waitForServer() {
-  return new Promise((resolve) => {
+function ensureEnv(appRoot) {
+  const envPath = path.join(appRoot, ".env");
+  const examplePath = path.join(appRoot, ".env.example");
+  if (!fs.existsSync(envPath) && fs.existsSync(examplePath)) {
+    try {
+      fs.copyFileSync(examplePath, envPath);
+      console.log("[electron] Created .env from .env.example");
+    } catch (err) {
+      console.warn("[electron] Could not create .env:", err.message);
+    }
+  }
+}
+
+/** Clean up stale data from previous versions that could cause issues */
+function migrateFromPreviousVersion(appRoot) {
+  const versionFile = path.join(appRoot, ".agent", ".version");
+  let prevVersion = "0.0.0";
+  try {
+    if (fs.existsSync(versionFile)) {
+      prevVersion = fs.readFileSync(versionFile, "utf8").trim();
+    }
+  } catch {}
+
+  const currentVersion = "0.6.0";
+
+  // Migration: clean stale checkpoints (caused task recovery loops in v0.5.x)
+  if (prevVersion !== currentVersion) {
+    console.log(`[electron] Migrating from v${prevVersion} to v${currentVersion}`);
+    const checkpointsDir = path.join(appRoot, ".agent", "checkpoints");
+    if (fs.existsSync(checkpointsDir)) {
+      try {
+        fs.rmSync(checkpointsDir, { recursive: true, force: true });
+        fs.mkdirSync(checkpointsDir, { recursive: true });
+        console.log("[electron] Cleaned stale checkpoints");
+      } catch (err) {
+        console.warn("[electron] Checkpoint cleanup failed:", err.message);
+      }
+    }
+    // Ensure .agent directory exists
+    const agentDir = path.join(appRoot, ".agent");
+    if (!fs.existsSync(agentDir)) {
+      fs.mkdirSync(agentDir, { recursive: true });
+    }
+    // Write version stamp
+    try { fs.writeFileSync(versionFile, currentVersion, "utf8"); } catch {}
+  }
+}
+
+function readEnvPort(appRoot) {
+  // Try .env.local first (higher priority), then .env
+  for (const name of [".env.local", ".env"]) {
+    const p = path.join(appRoot, name);
+    try {
+      if (fs.existsSync(p)) {
+        const content = fs.readFileSync(p, "utf8");
+        const m = content.match(/^PORT\s*=\s*(\d+)/m);
+        if (m) return Number(m[1]);
+      }
+    } catch {}
+  }
+  return 9877;
+}
+
+async function startServer() {
+  const { appRoot, serverPath } = resolveAppPaths();
+  const port = readEnvPort(appRoot);
+
+  // Run the server in-process (not a child process)
+  process.chdir(appRoot);
+  process.env.DADA_EMBEDDED = "1";
+  process.env.NO_BROWSER = "1";
+  process.env.NODE_ENV = "production";
+
+  const mod = await import(pathToFileURL(serverPath).href);
+  // main() starts listening but returns before the callback fires
+  await mod.main();
+
+  // Poll until the server responds
+  await new Promise((resolve, reject) => {
+    const maxWait = 30000;
+    const start = Date.now();
     const check = () => {
-      http.get(`${URL}/api/health`, (res) => {
+      http.get(`http://localhost:${port}/api/health`, (res) => {
         resolve();
       }).on("error", () => {
-        setTimeout(check, 500);
+        if (Date.now() - start > maxWait) {
+          reject(new Error("Server health check timeout"));
+        } else {
+          setTimeout(check, 300);
+        }
       });
     };
     check();
   });
+
+  return port;
 }
 
 function createTrayIcon() {
-  // Create a 16x16 tray icon from raw pixel data (DaDa "D" monogram)
   const size = 16;
   const buf = Buffer.alloc(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const idx = (y * size + x) * 4;
-      // Draw a simple rounded square with "D"
       const cx = size / 2, cy = size / 2;
       const dx = x - cx, dy = y - cy;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const inCircle = dist < 7;
       const inInner = dist < 4;
-      // Left half of D character
       const isD = inCircle && x < 11 && x > 4 && y > 3 && y < 12 &&
         !(x > 5 && x < 8 && y > 5 && y < 10);
 
       if (isD || (inCircle && !inInner && x >= 8)) {
-        buf[idx] = 125;     // R
-        buf[idx + 1] = 184; // G
-        buf[idx + 2] = 255; // B
-        buf[idx + 3] = 255; // A
+        buf[idx] = 125;
+        buf[idx + 1] = 184;
+        buf[idx + 2] = 255;
+        buf[idx + 3] = 255;
       } else {
-        buf[idx + 3] = 0;   // transparent
+        buf[idx + 3] = 0;
       }
     }
   }
   const icon = nativeImage.createFromBuffer(buf, { width: size, height: size });
   tray = new Tray(icon);
 
-  const contextMenu = Menu.buildFromTemplate([
+  // Find NSIS uninstaller next to the app executable (installed version only)
+  const uninstallerPath = path.join(path.dirname(process.execPath), "Uninstall DaDa.exe");
+
+  const menuItems = [
     {
       label: "Show DaDa",
       click: () => {
@@ -109,6 +169,18 @@ function createTrayIcon() {
       }
     },
     { type: "separator" },
+    ...(fs.existsSync(uninstallerPath)
+      ? [{
+          label: "Uninstall DaDa",
+          click: () => {
+            // Launch uninstaller detached, then quit
+            exec(`"${uninstallerPath}"`, { detached: true });
+            isQuitting = true;
+            app.quit();
+          }
+        },
+        { type: "separator" }]
+      : []),
     {
       label: "Quit",
       click: () => {
@@ -116,7 +188,9 @@ function createTrayIcon() {
         app.quit();
       }
     }
-  ]);
+  ];
+
+  const contextMenu = Menu.buildFromTemplate(menuItems);
 
   tray.setToolTip("DaDa AI Agent");
   tray.setContextMenu(contextMenu);
@@ -129,7 +203,8 @@ function createTrayIcon() {
   });
 }
 
-function createWindow() {
+function createWindow(port) {
+  const url = `http://localhost:${port}`;
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -145,16 +220,12 @@ function createWindow() {
     show: false
   });
 
-  mainWindow.loadURL(URL);
+  mainWindow.loadURL(url);
 
   mainWindow.once("ready-to-show", () => {
     mainWindow.show();
-    if (isDev) {
-      mainWindow.webContents.openDevTools({ mode: "detach" });
-    }
   });
 
-  // Minimize to tray instead of closing
   mainWindow.on("close", (event) => {
     if (!isQuitting) {
       event.preventDefault();
@@ -169,11 +240,13 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   try {
-    await startServer();
-    console.log("[electron] Server started, waiting for health check...");
-    await waitForServer();
-    console.log("[electron] Server healthy, creating window...");
-    createWindow();
+    const { appRoot } = resolveAppPaths();
+    ensureEnv(appRoot);
+    migrateFromPreviousVersion(appRoot);
+    console.log("[electron] Starting server in-process...");
+    serverPort = await startServer();
+    console.log(`[electron] Server healthy on port ${serverPort}, creating window...`);
+    createWindow(serverPort);
     createTrayIcon();
   } catch (err) {
     console.error("[electron] Failed to start:", err.message);
@@ -183,7 +256,6 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-  // Don't quit on macOS unless explicitly quitting
   if (process.platform !== "darwin" && isQuitting) {
     app.quit();
   }
@@ -193,14 +265,10 @@ app.on("activate", () => {
   if (mainWindow) {
     mainWindow.show();
   } else if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
+    createWindow(serverPort);
   }
 });
 
 app.on("before-quit", () => {
   isQuitting = true;
-  if (serverProcess) {
-    serverProcess.kill();
-    serverProcess = null;
-  }
 });
